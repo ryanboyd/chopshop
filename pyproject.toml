@@ -59,8 +59,8 @@ packages = { find = { where = ["src"], include = ["chopshop*"] } }
 
 
 [tool.setuptools.package-data]
-# If you vendored the diarizer repo under chopshop/diarizer/whisper_diarization/
-"chopshop.diarizer" = ["whisper_diarization/**"]
+# Because I vendored the diarizer repo under chopshop/diarizer/whisper-diarization/
+"chopshop.diarizer" = ["whisper-diarization/**"]
 
 [project.scripts]
 # Entry points must target a callable, not __main__
