@@ -59,7 +59,7 @@ Also, again, be sure that you have ffpmeg installed if not already:
 
 ### Manual Installation of Dependencies
 
-If you want to skip the potentially problematic .whl files, you can install manually. Note that it is *highly* likely that the order matters to avoid dependency pinning conflicts.
+If you want to skip the potentially problematic .whl file dependencies, you can install manually. Note that it is *highly* likely that the order matters to avoid dependency pinning conflicts.
 
 ```bash
 # (Recommended) fresh virtualenv
