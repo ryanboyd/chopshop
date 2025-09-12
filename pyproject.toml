@@ -1,0 +1,38 @@
+[build-system]
+
+requires = ["setuptools>=61.0"]
+
+build-backend = "setuptools.build_meta"
+
+
+[project]
+
+name = "chopshop"
+
+version = "0.0.1"
+
+authors = [
+	{ name="Ryan L. Boyd", email="ryan@ryanboyd.io" },
+]
+
+
+readme = "README.MD"
+
+requires-python = ">=3.10"
+
+dependencies=["faster-whisper>=1.1.0",
+              "nemo-toolkit[asr]>=2.dev",
+              "nvidia-cudnn-cu12",
+              ]
+
+classifiers = [
+	"Programming Language :: Python :: 3",
+	"License :: OSI Approved :: MIT License",
+	"Operating System :: OS Independent",
+]
+
+[project.urls]
+
+Homepage = "https://github.com/ryanboyd/chopshop"
+
+Issues = "https://github.com/ryanboyd/chopshop/issues"
