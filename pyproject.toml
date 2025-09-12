@@ -27,7 +27,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Topic :: Multimedia :: Sound/Audio :: Analysis",
-  "Intended Audience :: Researchers and Scientists",
+  "Intended Audience :: Science/Research",
 ]
 
 [project.urls]
