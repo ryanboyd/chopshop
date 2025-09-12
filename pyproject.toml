@@ -38,9 +38,6 @@ Issues   = "https://github.com/ryanboyd/chopshop/issues"
 # Full diarization pipeline (large downloads)
 diarization = [
   "nemo-toolkit[asr]>=2.dev",
-  "demucs @ git+https://github.com/MahmoudAshraf97/demucs.git",
-  "deepmultilingualpunctuation @ git+https://github.com/oliverguhr/deepmultilingualpunctuation.git",
-  "ctc-forced-aligner @ git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git",
 ]
 # User-space cuDNN libs for CUDA 12 (handy on many systems)
 cuda = [

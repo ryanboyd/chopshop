@@ -38,7 +38,15 @@ As a note, I'm putting in some effort to get all of this packaged up nicely as a
 
 `pip install "chopshop[diarization,cuda]"`
 
-...followed by:
+...followed by the three following `pip` installs:
+
+```
+pip install git+https://github.com/MahmoudAshraf97/demucs.git
+pip install git+https://github.com/oliverguhr/deepmultilingualpunctuation.git
+pip install git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
+```
+
+...and lastly, followed by this:
 
 ```
 pip install --force-reinstall --no-cache-dir \
