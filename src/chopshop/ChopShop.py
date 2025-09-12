@@ -47,14 +47,18 @@ class ChopShop:
         List[str]
             Paths to the created WAV files.
         """
+        # Make output dir if it doesn't already exist
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
         return extract_wav_from_video.split_audio_streams_to_wav(input_path, output_dir, **kwargs)
     
+
     def diarize_with_thirdparty(
         self,
         input_audio: str | Path,
         out_dir: str | Path,
         *,
-        repo_dir: str | Path = "diarizer/whisper-diarization",
+        repo_dir: str | Path | None = None,
         whisper_model: str = "medium.en",
         language: Optional[str] = None,
         device: Optional[str] = None,     # "cuda" or "cpu"; None = leave to wrapper/env
@@ -76,6 +80,9 @@ class ChopShop:
         - <stem>.csv (utterances; if csv_out not provided, defaults under work_dir)
         Also removes the copied local WAV and, by default, temp_outputs* folders.
         """
+        # Make output dir if it doesn't already exist
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
         return run_whisper_diarization_repo(
             audio_path=input_audio,
             out_dir=out_dir,
@@ -119,6 +126,9 @@ class ChopShop:
         Returns:
             Dict[str, Path]: {speaker_name -> path_to_wav}
         """
+        # Make output dir if it doesn't already exist
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
         return make_speaker_wavs_from_csv(
             source_wav=Path(source_wav),
             csv_path=Path(transcript_csv),
@@ -157,23 +167,19 @@ class ChopShop:
         """
         Export Whisper encoder embeddings (one row per transcript segment) to CSV.
 
-        If run_in_subprocess=True (default), spawns a clean Python process that never imports torch,
-        so GPU via CTranslate2 works without cuDNN conflicts.
-
-        Returns:
-            Path to the written CSV at <output_dir>/<source_stem>_embeddings.csv
-            (output_dir defaults to source_wav.parent).
+        If run_in_subprocess=True, spawns a clean Python process (avoids cuDNN conflicts).
+        Returns: <output_dir>/<source_stem>_embeddings.csv (default output_dir = source_wav.parent).
         """
-        transcript_csv = Path(transcript_csv)
-        source_wav = Path(source_wav)
+        # Resolve absolute paths so the child process is independent of CWD
+        transcript_csv = Path(transcript_csv).resolve()
+        source_wav = Path(source_wav).resolve()
 
-        # Decide output directory and final CSV path
-        out_dir_final = Path(output_dir) if output_dir is not None else source_wav.parent
+        out_dir_final = Path(output_dir).resolve() if output_dir is not None else source_wav.parent
         out_dir_final.mkdir(parents=True, exist_ok=True)
         output_csv = out_dir_final / f"{source_wav.stem}_embeddings.csv"
 
         if not run_in_subprocess:
-            # In-process path (works if torch hasn't polluted the process)
+            # In-process execution (only works if torch/cuDNN aren’t already imported badly)
             from .extract_whisper_embeddings import export_segment_embeddings_csv, EmbedConfig
             cfg = EmbedConfig(
                 model_name=model_name,
@@ -197,8 +203,6 @@ class ChopShop:
 
         # --- Subprocess path (recommended) ---
         env = os.environ.copy()
-
-        # Honor caller-provided env overrides first
         if extra_env:
             env.update({k: str(v) for k, v in extra_env.items()})
 
@@ -206,7 +210,7 @@ class ChopShop:
         if (device or "").lower() == "cpu":
             env.update({"CUDA_VISIBLE_DEVICES": "", "USE_CUDA": "0", "FORCE_CPU": "1"})
         else:
-            # Try to prepend the cuDNN wheel lib dir to LD_LIBRARY_PATH if available
+            # Prepend cuDNN wheel's lib dir if available (helps "libcudnn_ops" not found)
             try:
                 import nvidia.cudnn, pathlib  # type: ignore
                 cudnn_lib = str(pathlib.Path(nvidia.cudnn.__file__).with_name("lib"))
@@ -214,19 +218,16 @@ class ChopShop:
             except Exception:
                 pass
 
-        # Ensure transformers never pulls torch/TF/Flax in the child
+        # Keep transformers from pulling heavy backends in the child
         env.setdefault("TRANSFORMERS_NO_TORCH", "1")
         env.setdefault("TRANSFORMERS_NO_TF", "1")
         env.setdefault("TRANSFORMERS_NO_FLAX", "1")
-        # Uncomment for verbose extractor logs:
-        # env["CHOPSHOP_DEBUG"] = "1"
 
-        # Call: python -m chopshop.extract_whisper_embeddings ...
         cmd = [
             sys.executable, "-m", "chopshop.extract_whisper_embeddings",
             "--transcript_csv", str(transcript_csv),
             "--source_wav", str(source_wav),
-            "--output_dir", str(out_dir_final),  # extractor derives <stem>_embeddings.csv
+            "--output_dir", str(out_dir_final),    # child derives <stem>_embeddings.csv
             "--model_name", model_name,
             "--device", device,
             "--compute_type", compute_type,
@@ -238,15 +239,23 @@ class ChopShop:
             print(" ", shlex.join(cmd))
 
         try:
-            subprocess.run(cmd, check=True, env=env)
+            # Capture output so failures show useful diagnostics
+            res = subprocess.run(cmd, check=True, env=env, capture_output=True, text=True)
+            if verbose and res.stdout:
+                print(res.stdout.strip())
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"Embedding subprocess failed with code {e.returncode}\n"
-                f"STDERR:\n{getattr(e, 'stderr', b'').decode(errors='ignore') if hasattr(e, 'stderr') else ''}"
+                f"STDOUT:\n{(e.stdout or '').strip()}\n\nSTDERR:\n{(e.stderr or '').strip()}"
             ) from e
+
+        if not output_csv.exists():
+            # Defensive: child should have created it
+            raise FileNotFoundError(f"Expected embeddings CSV not found: {output_csv}")
 
         if verbose:
             print(f"Embeddings CSV written to: {output_csv}")
 
         return output_csv
+
 

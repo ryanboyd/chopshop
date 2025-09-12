@@ -1,39 +1,68 @@
 [build-system]
-
-requires = ["setuptools>=61.0"]
-
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
-
 [project]
-
 name = "chopshop"
+version = "0.0.2"
+authors = [{ name = "Ryan L. Boyd", email = "ryan@ryanboyd.io" }]
+description = "Audio/video chop → analyze toolkit."
 
-version = "0.0.1"
+# Make sure the filename matches your repo exactly (case-sensitive on Linux)
+readme = { file = "README.MD", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = { text = "MIT" }
 
-authors = [
-	{ name="Ryan L. Boyd", email="ryan@ryanboyd.io" },
+dependencies = [
+  # Core, minimal runtime for splitting, per-speaker builds, and embeddings
+  "faster-whisper>=1.1.0",
+  "transformers>=4.38.0",   # for WhisperFeatureExtractor
+  "librosa>=0.10.1",
+  "pydub>=0.25.1"
+  # Do NOT list torch/torchaudio here—users must install the right CUDA wheel themselves
 ]
 
-description = "Coming soon..."
-
-readme = "README.MD"
-
-requires-python = ">=3.10"
-
-dependencies=["faster-whisper>=1.1.0",
-              "nemo-toolkit[asr]>=2.dev",
-              "nvidia-cudnn-cu12",
-              ]
-
 classifiers = [
-	"Programming Language :: Python :: 3",
-	"License :: OSI Approved :: MIT License",
-	"Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Multimedia :: Sound/Audio :: Analysis",
+  "Intended Audience :: Researchers and Scientists",
 ]
 
 [project.urls]
-
 Homepage = "https://github.com/ryanboyd/chopshop"
+Issues   = "https://github.com/ryanboyd/chopshop/issues"
 
-Issues = "https://github.com/ryanboyd/chopshop/issues"
+[project.optional-dependencies]
+# Full diarization pipeline (large downloads)
+diarization = [
+  "nemo-toolkit[asr]>=2.dev",
+  "demucs @ git+https://github.com/MahmoudAshraf97/demucs.git",
+  "deepmultilingualpunctuation @ git+https://github.com/oliverguhr/deepmultilingualpunctuation.git",
+  "ctc-forced-aligner @ git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git",
+]
+# User-space cuDNN libs for CUDA 12 (handy on many systems)
+cuda = [
+  "nvidia-cudnn-cu12",
+]
+
+[tool.setuptools]
+# Map top-level packages to the 'src' directory
+package-dir = {"" = "src"}
+include-package-data = true
+zip-safe = false
+
+
+# find packages
+packages = { find = { where = ["src"], include = ["chopshop*"] } }
+
+
+[tool.setuptools.package-data]
+# If you vendored the diarizer repo under chopshop/diarizer/whisper_diarization/
+"chopshop.diarizer" = ["whisper_diarization/**"]
+
+[project.scripts]
+# Entry points must target a callable, not __main__
+# Ensure extract_whisper_embeddings.py defines a `main()` (or `cli()`) function.
+chopshop-embeddings = "chopshop.extract_whisper_embeddings:main"

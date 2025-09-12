@@ -34,6 +34,23 @@ To verify your CUDA runtime: `nvidia-smi` should show the driver and CUDA versio
 
 ## Install
 
+As a note, I'm putting in some effort to get all of this packaged up nicely as a `pip` installable library. At the moment, you can try this:
+
+`pip install "chopshop[diarization,cuda]"`
+
+...followed by:
+
+```
+pip install --force-reinstall --no-cache-dir \
+  torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+  --index-url https://download.pytorch.org/whl/cu124
+```
+
+Also, again, be sure that you have ffpmeg installed if not already:
+`sudo apt-get update && sudo apt-get install -y ffmpeg`
+
+### Manual Installation of Dependencies
+
 > It is highly likely that the order matters to avoid dependency pinning conflicts.
 
 ```bash
@@ -160,4 +177,4 @@ Huge thanks to **Mahmoud Ashraf** for the outstanding [`whisper-diarization`](ht
 
 ## Roadmap
 
-TBD.
+TBD. One of the big ones is to unify everything with defaults into a single function for the `ChopShop()` class.

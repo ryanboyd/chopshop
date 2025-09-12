@@ -6,6 +6,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
+from importlib.resources import files, as_file
+from contextlib import ExitStack
+
+def _resolve_vendored_repo_dir() -> Path:
+    # This returns a Traversable pointing at the directory inside your wheel.
+    return files("chopshop.diarizer").joinpath("whisper-diarization")
 
 @dataclass
 class DiarizationOutputFiles:
@@ -96,18 +102,18 @@ def run_whisper_diarization_repo(
     audio_path: str | Path,
     out_dir: str | Path,
     *,
-    repo_dir: str | Path = "vendor/whisper-diarization",
+    repo_dir: str | Path | None = None,      # ← now Optional
     whisper_model: str = "medium.en",
     language: Optional[str] = None,
-    device: Optional[str] = None,     # "cuda" / "cpu"
+    device: Optional[str] = None,            # "cuda" / "cpu"
     batch_size: int = 0,
     no_stem: bool = False,
     suppress_numerals: bool = False,
     parallel: bool = False,
     timeout: Optional[int] = None,
-    use_custom: bool = True,                 # prefer diarize_custom.py if present
-    keep_temp: bool = False,                 # <-- NEW: remove temp_outputs* by default
-    num_speakers: Optional[int] = None,      # optionally specify how many speakers we want to solve for
+    use_custom: bool = True,
+    keep_temp: bool = False,
+    num_speakers: Optional[int] = None,
 ) -> DiarizationOutputFiles:
     """
     Wraps MahmoudAshraf97/whisper-diarization and normalizes outputs.
@@ -118,10 +124,6 @@ def run_whisper_diarization_repo(
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    repo_dir = Path(repo_dir).resolve()
-    if not (repo_dir / "diarize.py").exists():
-        raise FileNotFoundError(f"whisper-diarization not found at {repo_dir}")
-
     # Isolated working folder
     work_dir = out_dir / f"{audio_path.stem}"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -131,12 +133,27 @@ def run_whisper_diarization_repo(
     if not local_audio.exists():
         shutil.copy2(audio_path, local_audio)
 
-    # CSV default: <work_dir>/<stem>.csv (or user-provided path)
-    csv_path = (work_dir / f"{local_audio.stem}.csv")
+    # CSV default: <work_dir>/<stem>.csv
+    csv_path = work_dir / f"{local_audio.stem}.csv"
 
-    try:
+    # Resolve path to vendored repo (or use user-supplied path)
+    with ExitStack() as stack:
+        if repo_dir is None:
+            repo_trav = _resolve_vendored_repo_dir()
+            repo_dir_path = stack.enter_context(as_file(repo_trav))  # real FS path
+        else:
+            repo_dir_path = Path(repo_dir).resolve()
+
+        # Validate the script exists inside the repo
+        script_name = ("diarize_custom.py" if (use_custom and (repo_dir_path / "diarize_custom.py").exists())
+                       else ("diarize_parallel.py" if parallel else "diarize.py"))
+        script_path = (repo_dir_path / script_name)
+        if not script_path.exists():
+            raise FileNotFoundError(f"Expected script not found: {script_path}")
+
+        # Run the repo script (cwd = work_dir so temp_outputs land there)
         _run_repo_script(
-            repo_dir=repo_dir,
+            repo_dir=repo_dir_path,
             audio_path=local_audio,
             work_dir=work_dir,
             whisper_model=whisper_model,
@@ -151,11 +168,11 @@ def run_whisper_diarization_repo(
             csv_out=csv_path,
             num_speakers=num_speakers,
         )
-    finally:
-        # Tidy: remove temp_outputs* regardless of success/failure if keep_temp is False
-        _cleanup_temps(work_dir, keep_temp)
 
-    # Collect the outputs we care about (.txt/.srt/.csv)
+    # Tidy temp dirs
+    _cleanup_temps(work_dir, keep_temp)
+
+    # Collect outputs (.txt/.srt/.csv)
     raw = _guess_outputs_from_stem(work_dir, local_audio.stem)
 
     # Remove the copied WAV now that we're done
@@ -166,3 +183,4 @@ def run_whisper_diarization_repo(
         pass
 
     return DiarizationOutputFiles(work_dir=work_dir, raw_files=raw, speaker_wavs={})
+
