@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import inspect
 from pathlib import Path
 from typing import Dict, List, Iterable
 
@@ -133,6 +134,13 @@ parser.add_argument(
     help="Sample rate for exported speaker WAVs.",
 )
 
+parser.add_argument(
+    "--num-speakers",
+    type=int,
+    default=None,
+    help="If set, force the diarizer to use this number of speakers (oracle).",
+)
+
 args = parser.parse_args()
 language = process_language_arg(args.language, args.model_name)
 
@@ -230,7 +238,26 @@ if args.diarizer == "msdd":
     from diarization import MSDDDiarizer
     diarizer_model = MSDDDiarizer(device=args.device)
 
-speaker_ts = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+# Helper: check which kw name the diarizer supports
+def _supports_kw(func, name: str) -> bool:
+    try:
+        return name in inspect.signature(func).parameters
+    except Exception:
+        return False
+
+diarize_kwargs = {}
+if args.num_speakers is not None:
+    # Try common kw names used across implementations
+    for key in ("num_speakers", "oracle_num_speakers", "max_num_speakers"):
+        if _supports_kw(diarizer_model.diarize, key):
+            diarize_kwargs[key] = args.num_speakers
+            break
+
+speaker_ts = diarizer_model.diarize(
+    torch.from_numpy(audio_waveform).unsqueeze(0),
+    **diarize_kwargs
+)
+
 del diarizer_model
 torch.cuda.empty_cache()
 

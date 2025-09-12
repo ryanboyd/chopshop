@@ -27,6 +27,7 @@ def _run_repo_script(
     timeout: Optional[int],
     use_custom: bool,
     csv_out: Optional[Path],
+    num_speakers: Optional[int],
 ) -> None:
 
     script = (
@@ -41,13 +42,20 @@ def _run_repo_script(
         cmd += ["--language", language]
     if device:
         cmd += ["--device", device]
+    
     cmd += ["--batch-size", str(batch_size)]   # 0 == non-batched
+    
     if no_stem:
         cmd += ["--no-stem"]
     if suppress_numerals:
         cmd += ["--suppress_numerals"]
-    
+
     cmd += ["--csv-out", str(csv_out)]
+
+    if num_speakers is not None:
+        cmd += ["--num-speakers", str(num_speakers)]
+    
+    
 
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,6 +107,7 @@ def run_whisper_diarization_repo(
     timeout: Optional[int] = None,
     use_custom: bool = True,                 # prefer diarize_custom.py if present
     keep_temp: bool = False,                 # <-- NEW: remove temp_outputs* by default
+    num_speakers: Optional[int] = None,      # optionally specify how many speakers we want to solve for
 ) -> DiarizationOutputFiles:
     """
     Wraps MahmoudAshraf97/whisper-diarization and normalizes outputs.
@@ -140,6 +149,7 @@ def run_whisper_diarization_repo(
             timeout=timeout,
             use_custom=use_custom,
             csv_out=csv_path,
+            num_speakers=num_speakers,
         )
     finally:
         # Tidy: remove temp_outputs* regardless of success/failure if keep_temp is False
