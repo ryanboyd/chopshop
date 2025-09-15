@@ -7,11 +7,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Literal
 
-# other imports
-from . import extract_wav_from_video
-from .diarizer.whisper_diar_wrapper import DiarizationOutputFiles, run_whisper_diarization_repo
-from .split_wav_by_speaker import make_speaker_wavs_from_csv
-from .extract_whisper_embeddings import export_segment_embeddings_csv, EmbedConfig
+# imports for extracting and processing audio
+from .audio import extract_wav_from_video
+from .audio.diarizer.whisper_diar_wrapper import DiarizationOutputFiles, run_whisper_diarization_repo
+from .audio.split_wav_by_speaker import make_speaker_wavs_from_csv
+from .audio.extract_whisper_embeddings import export_segment_embeddings_csv, EmbedConfig
 
 """
 ChopShop: A toolkit for breaking down input files (e.g., video)
@@ -179,8 +179,8 @@ class ChopShop:
         output_csv = out_dir_final / f"{source_wav.stem}_embeddings.csv"
 
         if not run_in_subprocess:
-            # In-process execution (only works if torch/cuDNN aren’t already imported badly)
-            from .extract_whisper_embeddings import export_segment_embeddings_csv, EmbedConfig
+            # In-process execution (only works if torch/cuDNN aren't already imported... maybe?)
+            from .audio.extract_whisper_embeddings import export_segment_embeddings_csv, EmbedConfig
             cfg = EmbedConfig(
                 model_name=model_name,
                 device=device,
@@ -210,7 +210,7 @@ class ChopShop:
         if (device or "").lower() == "cpu":
             env.update({"CUDA_VISIBLE_DEVICES": "", "USE_CUDA": "0", "FORCE_CPU": "1"})
         else:
-            # Prepend cuDNN wheel's lib dir if available (helps "libcudnn_ops" not found)
+            # Prepend cuDNN wheel's lib dir if available (helps with "libcudnn_ops" not found)
             try:
                 import nvidia.cudnn, pathlib  # type: ignore
                 cudnn_lib = str(pathlib.Path(nvidia.cudnn.__file__).with_name("lib"))
@@ -218,13 +218,13 @@ class ChopShop:
             except Exception:
                 pass
 
-        # Keep transformers from pulling heavy backends in the child
+        # Keep transformers from pulling heavy backends in the child, because we don't need them
         env.setdefault("TRANSFORMERS_NO_TORCH", "1")
         env.setdefault("TRANSFORMERS_NO_TF", "1")
         env.setdefault("TRANSFORMERS_NO_FLAX", "1")
 
         cmd = [
-            sys.executable, "-m", "chopshop.extract_whisper_embeddings",
+            sys.executable, "-m", "chopshop.audio.extract_whisper_embeddings",
             "--transcript_csv", str(transcript_csv),
             "--source_wav", str(source_wav),
             "--output_dir", str(out_dir_final),    # child derives <stem>_embeddings.csv

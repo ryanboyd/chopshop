@@ -11,7 +11,7 @@ from contextlib import ExitStack
 
 def _resolve_vendored_repo_dir() -> Path:
     # This returns a Traversable pointing at the directory inside your wheel.
-    return files("chopshop.diarizer").joinpath("whisper-diarization")
+    return files("chopshop.audio.diarizer").joinpath("whisper-diarization")
 
 @dataclass
 class DiarizationOutputFiles:
