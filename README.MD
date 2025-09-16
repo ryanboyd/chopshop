@@ -83,6 +83,10 @@ pip install -U nvidia-cudnn-cu12
 pip install --force-reinstall --no-cache-dir \
   torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
   --index-url https://download.pytorch.org/whl/cu124
+
+# 4) Other dependencies...
+pip install contentcoder
+
 ```
 
 If you hit cuDNN errors, it usually means the CUDA/cuDNN runtime and the PyTorch wheels don't match. Keep them consistent (CUDA **12.4** with the `cu124` wheel index, and cuDNN 9 from either the `nvidia-cudnn-cu12` wheel or your OS package).
