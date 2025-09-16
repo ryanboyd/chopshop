@@ -20,6 +20,7 @@ dependencies = [
   "librosa>=0.10.1",
   "pydub>=0.25.1",
   "contentcoder",
+  "archetyper",
   # NOTE TO SELF:
   # Do NOT list torch/torchaudio here;
   # users must install the right CUDA wheel themselves

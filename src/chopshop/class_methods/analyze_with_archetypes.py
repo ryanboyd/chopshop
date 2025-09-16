@@ -1,0 +1,130 @@
+from pathlib import Path
+from typing import Optional, Literal, Union, Sequence, Iterable, Tuple
+import csv
+
+from ..text import multi_archetype_analyzer as maa
+from ..text.text_gather import (
+    csv_to_analysis_ready_csv,
+    txt_folder_to_analysis_ready_csv,
+)
+
+
+def analyze_with_archetypes(
+    self,
+    *,
+    # ----- Input source (choose exactly one) -----
+    csv_path: Optional[Union[str, Path]] = None,
+    txt_dir: Optional[Union[str, Path]] = None,
+
+    # ----- Output -----
+    out_features_csv: Union[str, Path],
+
+    # ----- Archetype CSVs (one or more) -----
+    archetype_csvs: Sequence[Union[str, Path]],
+
+    # ====== SHARED I/O OPTIONS ======
+    encoding: str = "utf-8-sig",
+    delimiter: str = ",",
+
+    # ====== CSV GATHER OPTIONS (when csv_path is provided) ======
+    text_cols: Sequence[str] = ("text",),
+    id_cols: Optional[Sequence[str]] = None,
+    mode: Literal["concat", "separate"] = "concat",
+    group_by: Optional[Sequence[str]] = None,
+    joiner: str = " ",
+    num_buckets: int = 512,
+    max_open_bucket_files: int = 64,
+    tmp_root: Optional[Union[str, Path]] = None,
+
+    # ====== TXT FOLDER GATHER OPTIONS (when txt_dir is provided) ======
+    recursive: bool = True,
+    pattern: str = "*.txt",
+    id_from: Literal["stem", "name", "path"] = "stem",
+    include_source_path: bool = True,
+
+    # ====== Archetyper scoring options ======
+    model_name: str = "sentence-transformers/all-roberta-large-v1",
+    mean_center_vectors: bool = True,
+    fisher_z_transform: bool = False,
+    rounding: int = 4,
+) -> Path:
+    """
+    Gather input text into an analysis-ready CSV (schema: text_id,text,...) and compute
+    archetype scores across one or more archetype CSVs via multi_archetype_analyzer,
+    writing a single wide CSV with stable, prefixed columns.
+
+    Output schema:
+        text_id, WC, <fileprefix>__<ArchetypeName>, <fileprefix>__<ArchetypeName2>, ...
+    One output row per gathered input row (or per group if `group_by` is used).
+    """
+
+    out_features_csv = Path(out_features_csv)
+    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- 1) Build the analysis-ready CSV (must include columns: text_id,text) ---
+    if (csv_path is None) == (txt_dir is None):
+        raise ValueError("Provide exactly one of csv_path or txt_dir.")
+
+    if csv_path is not None:
+        analysis_ready = Path(
+            csv_to_analysis_ready_csv(
+                csv_path=csv_path,
+                out_csv=out_features_csv.with_name("analysis_ready.csv"),
+                text_cols=list(text_cols),
+                id_cols=list(id_cols) if id_cols else None,
+                mode=mode,
+                group_by=list(group_by) if group_by else None,
+                delimiter=delimiter,
+                encoding=encoding,
+                joiner=joiner,
+                num_buckets=num_buckets,
+                max_open_bucket_files=max_open_bucket_files,
+                tmp_root=tmp_root,
+            )
+        )
+    else:
+        analysis_ready = Path(
+            txt_folder_to_analysis_ready_csv(
+                root_dir=txt_dir,
+                out_csv=out_features_csv.with_name("analysis_ready.csv"),
+                recursive=recursive,
+                pattern=pattern,
+                encoding=encoding,
+                id_from=id_from,
+                include_source_path=include_source_path,
+            )
+        )
+
+    # --- 2) Validate archetype CSVs ---
+    archetype_csvs = [Path(p) for p in archetype_csvs]
+    if not archetype_csvs:
+        raise ValueError("archetype_csvs must contain at least one CSV file.")
+    for p in archetype_csvs:
+        if not p.exists():
+            raise FileNotFoundError(f"Archetype CSV not found: {p}")
+
+    # --- 3) Stream (text_id, text) into the archetype analyzer → write features CSV ---
+    def _iter_items_from_csv(path: Path, *, id_col: str = "text_id", text_col: str = "text") -> Iterable[Tuple[str, str]]:
+        with path.open("r", newline="", encoding=encoding) as f:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            if id_col not in reader.fieldnames or text_col not in reader.fieldnames:
+                raise ValueError(
+                    f"Expected columns '{id_col}' and '{text_col}' in {path}; found {reader.fieldnames}"
+                )
+            for row in reader:
+                yield str(row[id_col]), (row.get(text_col) or "")
+
+    maa.analyze_texts_to_csv(
+        items=_iter_items_from_csv(analysis_ready),
+        archetype_csvs=archetype_csvs,
+        out_csv=out_features_csv,
+        model_name=model_name,
+        mean_center_vectors=mean_center_vectors,
+        fisher_z_transform=fisher_z_transform,
+        rounding=rounding,
+        encoding=encoding,
+        delimiter=delimiter,
+        id_col_name="text_id",
+    )
+
+    return out_features_csv

@@ -38,6 +38,9 @@ class ChopShop:
 
         from .class_methods.gather_text import gather_text
         ChopShop.gather_text = gather_text
+
+        from .class_methods.analyze_with_archetypes import analyze_with_archetypes
+        ChopShop.analyze_with_archetypes = analyze_with_archetypes
         
         
         pass
