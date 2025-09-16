@@ -40,6 +40,7 @@ def _run_repo_script(
         "diarize_custom.py" if (use_custom and (repo_dir / "diarize_custom.py").exists())
         else ("diarize_parallel.py" if parallel else "diarize.py")
     )
+
     cmd = [sys.executable, str((repo_dir / script).resolve()), "-a", str(audio_path)]
 
     if whisper_model:
@@ -103,7 +104,7 @@ def run_whisper_diarization_repo(
     out_dir: str | Path,
     *,
     repo_dir: str | Path | None = None,      # ← now Optional
-    whisper_model: str = "medium.en",
+    whisper_model: str = "base.en",
     language: Optional[str] = None,
     device: Optional[str] = None,            # "cuda" / "cpu"
     batch_size: int = 0,
@@ -184,3 +185,74 @@ def run_whisper_diarization_repo(
 
     return DiarizationOutputFiles(work_dir=work_dir, raw_files=raw, speaker_wavs={})
 
+# ---------------- CLI: allow `python -m chopshop.audio.diarizer.whisper_diar_wrapper` -----
+
+def _build_arg_parser():
+    import argparse
+    p = argparse.ArgumentParser(
+        description="ChopShop wrapper for MahmoudAshraf97/whisper-diarization"
+    )
+    # required I/O
+    p.add_argument("--audio_path", required=True, help="Path to input audio (e.g., WAV)")
+    p.add_argument("--out_dir",    required=True, help="Directory to write outputs (work_dir/<stem>/...)")
+
+    # optional repo dir (omit to use vendored copy)
+    p.add_argument("--repo_dir", default=None, help="Path to whisper-diarization repo; omit to use vendored")
+
+    # diarization controls
+    p.add_argument("--whisper_model", default="medium.en", help="Faster-Whisper model name (e.g., base, medium.en)")
+    p.add_argument("--language", default=None, help="Force language (e.g., en). Leave empty to auto-detect")
+    p.add_argument("--device", default=None, choices=["cuda", "cpu"],
+                   help="cuda or cpu (omit to let underlying tools decide)")
+    p.add_argument("--batch_size", type=int, default=0, help="Whisper batch size (0 = non-batched)")
+
+    p.add_argument("--no_stem", action="store_true", help="Disable source separation (no Demucs stem)")
+    p.add_argument("--suppress_numerals", action="store_true", help="Suppress numerals in transcript")
+    p.add_argument("--parallel", action="store_true", help="Use diarize_parallel.py if available")
+    p.add_argument("--timeout", type=int, default=None, help="Kill run after N seconds")
+
+    p.add_argument("--use_custom", action="store_true", default=True,
+                   help="Use diarize_custom.py if present (default ON)")
+    p.add_argument("--no-custom", dest="use_custom", action="store_false",
+                   help="Force upstream script (diarize.py/diarize_parallel.py)")
+
+    p.add_argument("--keep_temp", action="store_true", help="Keep temp_outputs* folders")
+    p.add_argument("--num_speakers", type=int, default=None, help="Optional speaker count hint")
+
+    return p
+
+
+def main():
+    import sys
+    args = _build_arg_parser().parse_args()
+
+    outs = run_whisper_diarization_repo(
+        audio_path=args.audio_path,
+        out_dir=args.out_dir,
+        repo_dir=args.repo_dir,
+        whisper_model=args.whisper_model,
+        language=args.language,
+        device=args.device,
+        batch_size=args.batch_size,
+        no_stem=args.no_stem,
+        suppress_numerals=args.suppress_numerals,
+        parallel=args.parallel,
+        timeout=args.timeout,
+        use_custom=args.use_custom,
+        keep_temp=args.keep_temp,
+        num_speakers=args.num_speakers,
+    )
+
+    print(f"Work dir: {outs.work_dir}")
+    if outs.raw_files:
+        for k, v in outs.raw_files.items():
+            print(f"{k.upper()}: {v}")
+    else:
+        print("No output files detected.")
+
+    # return code 0 for success
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

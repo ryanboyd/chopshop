@@ -1,387 +1,225 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
-
-# Keep Transformers from touching torch/TF/Flax in this module
-import os as _os
-_os.environ.setdefault("TRANSFORMERS_NO_TORCH", "1")
-_os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-_os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
-
-import csv
-from dataclasses import dataclass
+import os, sys, shlex, subprocess
 from pathlib import Path
-from typing import Optional, Any, List, Tuple
+from typing import Optional, Literal, Union
 
-import numpy as np
-import librosa
-from ctranslate2 import StorageView
-import ctranslate2
-from faster_whisper import WhisperModel
-from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor
-
-
-# ----------------------------
-# Helpers
-# ----------------------------
-
-def _hf_repo_for(model_name: str) -> str:
-    name = model_name.lower()
-    table = {
-        "tiny": "openai/whisper-tiny",
-        "tiny.en": "openai/whisper-tiny.en",
-        "base": "openai/whisper-base",
-        "base.en": "openai/whisper-base.en",
-        "small": "openai/whisper-small",
-        "small.en": "openai/whisper-small.en",
-        "medium": "openai/whisper-medium",
-        "medium.en": "openai/whisper-medium.en",
-        "large": "openai/whisper-large",
-        "large-v1": "openai/whisper-large-v1",
-        "large-v2": "openai/whisper-large-v2",
-        "large-v3": "openai/whisper-large-v3",
-        "distil-large-v2": "openai/whisper-large-v2",
-        "distil-medium.en": "openai/whisper-medium.en",
-    }
-    return table.get(name, f"openai/whisper-{name}")
-
-def _storageview_to_numpy(x) -> np.ndarray:
-    if hasattr(x, "to_array"):
-        try:
-            return x.to_array()
-        except Exception:
-            pass
-    if hasattr(x, "to"):
-        try:
-            xc = x.to("cpu")
-            if hasattr(xc, "to_array"):
-                return xc.to_array()
-        except Exception:
-            pass
-    return np.asarray(x)
-
-def _sv_to_numpy_cpu(sv) -> Optional[np.ndarray]:
-    try:
-        if hasattr(sv, "to_array"):
-            arr = sv.to_array()
-        else:
-            arr = np.asarray(sv)
-        if arr is None:
-            return None
-        if arr.dtype == object and arr.ndim <= 1:
-            return None
-        return arr
-    except Exception:
-        return None
-
-
-
-def _encode_features_any_layout(ct2_model, feats: np.ndarray) -> Optional[np.ndarray]:
-    """
-    Try encoding with CT2 Whisper for both common layouts:
-      1) [B, 80, T]
-      2) [B, T, 80]
-    Return a pooled [D] vector if successful, else None.
-    """
-    f = np.ascontiguousarray(feats.astype("float32", copy=False))
-    if f.ndim == 2:  # [80, T] -> [1, 80, T]
-        f = f[None, ...]
-    if f.ndim != 3:
-        return None
-
-    candidates = [
-        f,                         # [B, 80, T]
-        np.transpose(f, (0, 2, 1)) # [B, T, 80]
-    ]
-
-    for cand in candidates:
-        try:
-            # *** THE IMPORTANT BIT: force CPU output so to_array() works reliably ***
-            sv = ct2_model.encode(StorageView.from_array(cand), to_cpu=True)
-        except Exception:
-            continue
-
-        arr = _sv_to_numpy_cpu(sv)  # this now returns a real ndarray
-        if arr is None:
-            continue
-
-        # Pool to [D] by averaging all axes except the last (assumed hidden size)
-        if arr.ndim == 1:
-            vec = arr
-        else:
-            try:
-                D = int(arr.shape[-1])
-                vec = arr.reshape(-1, D).mean(axis=0)
-            except Exception:
-                vec = None
-
-        if vec is None or vec.ndim != 1:
-            continue
-
-        if 128 <= vec.shape[0] <= 2048:  # sanity range for Whisper hidden sizes
-            return vec
-
-    return None
-
-
-
-def _pick(primary: str, fieldnames: List[str], *alts: str) -> Optional[str]:
-    for k in (primary, *alts):
-        if k in fieldnames:
-            return k
-    return None
-
-def _resolve_columns(fieldnames: List[str],
-                     start_col: str, end_col: str, speaker_col: str) -> Tuple[str,str,str]:
-    sc = _pick(start_col,   fieldnames, "start", "from", "t0", "start_ms", "start_sec")
-    ec = _pick(end_col,     fieldnames, "end",   "to",   "t1", "end_ms",   "end_sec")
-    pc = _pick(speaker_col, fieldnames, "speaker_label", "spk", "speaker_id", "speaker_name")
-    if not (sc and ec and pc):
-        raise ValueError(
-            f"Could not find required columns. Have {fieldnames}. "
-            f"Tried start={start_col}/..., end={end_col}/..., speaker={speaker_col}/..."
-        )
-    return sc, ec, pc
-
-def _guess_time_unit(max_end: float, dur_s: float, n_samples: int) -> str:
-    """
-    Heuristically guess time unit of transcript values:
-      - 's' if values look like seconds
-      - 'ms' if values look like milliseconds
-      - 'samples' if values look like raw sample indices
-    """
-    # Allow 10% slack
-    if max_end <= dur_s * 1.1:
-        return "s"
-    if max_end <= (dur_s * 1000.0) * 1.1:
-        return "ms"
-    if max_end <= n_samples * 1.1:
-        return "samples"
-    # Fallback: assume seconds if not wildly off
-    return "s"
-
-
-@dataclass
-class EmbedConfig:
-    model_name: str = "base"        # faster-whisper model name or ct2 dir
-    device: str = "auto"            # "cuda", "cpu", or "auto"
-    compute_type: str = "float16"   # "float16" (GPU), "int8" (CPU), etc.
-    time_unit: str = "auto"         # "auto" | "ms" | "s" | "samples"
-
-
-# ----------------------------
-# Core
-# ----------------------------
-
-def export_segment_embeddings_csv(
-    transcript_csv: str | Path,
-    source_wav: str | Path,
-    output_dir: Optional[str | Path] = None,
+def extract_whisper_embeddings(
     *,
-    config: EmbedConfig = EmbedConfig(),
-    start_col: str = "start_time",
-    end_col: str = "end_time",
-    speaker_col: str = "speaker",
-    sr: int = 16000,
+    # required
+    source_wav: Union[str, Path],
+
+    # optional transcript-driven mode
+    transcript_csv: Optional[Union[str, Path]] = None,
+    time_unit: Literal["auto", "ms", "s", "samples"] = "auto",
+
+    # general-audio mode (used when transcript_csv is None)
+    strategy: Literal["windows", "nonsilent"] = "windows",
+    window_s: float = 30.0,
+    hop_s: float = 15.0,
+    min_seg_s: float = 1.0,
+    top_db: float = 30.0,
+    aggregate: Literal["none", "mean"] = "none",
+
+    # outputs
+    output_dir: Optional[Union[str, Path]] = None,
+
+    # model/runtime
+    model_name: str = "base",
+    device: Literal["auto", "cuda", "cpu"] = "auto",
+    compute_type: str = "float16",
+
+    # execution strategy
+    run_in_subprocess: bool = True,
+    extra_env: Optional[dict] = None,
+    verbose: bool = True,
+
+    # where the extractor lives (python -m <module>)
+    extractor_module: str = "chopshop.audio.extract_whisper_embeddings_subproc",
 ) -> Path:
     """
-    Build a CSV of Whisper encoder embeddings per (start,end,speaker) row in the transcript,
-    using faster-whisper (CTranslate2) and the matching HF WhisperFeatureExtractor.
+    Export Whisper encoder embeddings to CSV.
 
-    Output columns: start_time, end_time, speaker, e0..e{D-1}
+    Modes:
+      • Transcript-driven (if transcript_csv is provided): one row per transcript segment.
+      • General-audio (no transcript): fixed windows or non-silent spans; optional mean pooling.
+
+    Returns:
+      <output_dir>/<source_stem>_embeddings.csv
     """
-    transcript_csv = Path(transcript_csv)
-    source_wav = Path(source_wav)
+    source_wav = Path(source_wav).resolve()
+    out_dir_final = Path(output_dir).resolve() if output_dir else source_wav.parent
+    out_dir_final.mkdir(parents=True, exist_ok=True)
+    output_csv = out_dir_final / f"{source_wav.stem}_embeddings.csv"
 
-    # Decide output directory
-    if output_dir is None:
-        output_dir = source_wav.parent
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Final output path
-    output_csv = output_dir / f"{source_wav.stem}_embeddings.csv"
-
-    # 1) Load audio (mono, sr)
-    audio, in_sr = librosa.load(str(source_wav), sr=sr, mono=True)
-    n_samples = len(audio)
-    dur_s = n_samples / float(sr)
-
-    # 2) Load faster-whisper and ct2 model
-    fw = WhisperModel(config.model_name, device=config.device, compute_type=config.compute_type)
-    try:
-        ct2_model: ctranslate2.models.Whisper = fw.model  # type: ignore[attr-defined]
-    except AttributeError:
-        model_dir = getattr(fw, "model_dir", None) or getattr(fw, "_model_dir", None)
-        if not model_dir:
-            raise RuntimeError(
-                "Could not access the underlying CTranslate2 model from faster-whisper. "
-                "Consider passing a local CTranslate2 model directory as model_name."
+    if not run_in_subprocess:
+        # ---- In-process path (only when you’re sure no Torch/CUDA conflicts) ----
+        from ..audio.extract_whisper_embeddings import (  # type: ignore
+            export_segment_embeddings_csv,
+            export_audio_embeddings_csv,
+            EmbedConfig,
+        )
+        cfg = EmbedConfig(model_name=model_name, device=device, compute_type=compute_type, time_unit=time_unit)
+        if transcript_csv is not None:
+            transcript_csv = Path(transcript_csv).resolve()
+            return Path(
+                export_segment_embeddings_csv(
+                    transcript_csv=transcript_csv,
+                    source_wav=source_wav,
+                    output_dir=out_dir_final,
+                    config=cfg,
+                )
             )
-        ct2_model = ctranslate2.models.Whisper(str(model_dir), device=config.device, compute_type=config.compute_type)
+        else:
+            return Path(
+                export_audio_embeddings_csv(
+                    source_wav=source_wav,
+                    output_dir=out_dir_final,
+                    config=cfg,
+                    strategy=strategy,
+                    window_s=window_s,
+                    hop_s=hop_s,
+                    min_seg_s=min_seg_s,
+                    top_db=top_db,
+                    aggregate=aggregate,
+                )
+            )
 
-    # 3) Feature extractor
-    fe = WhisperFeatureExtractor.from_pretrained(_hf_repo_for(config.model_name))
+    # ---- Subprocess path (recommended) ----
+    env = os.environ.copy()
+    # Keep Transformers from importing heavy backends in the child
+    env.setdefault("TRANSFORMERS_NO_TORCH", "1")
+    env.setdefault("TRANSFORMERS_NO_TF", "1")
+    env.setdefault("TRANSFORMERS_NO_FLAX", "1")
 
-    # 4) Read transcript and decide time unit
-    if not transcript_csv.exists():
-        raise FileNotFoundError(f"Transcript CSV not found: {transcript_csv}")
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items()})
 
-    rows_out: list[list[Any]] = []
-    embed_dim: Optional[int] = None
-
-    # First pass: inspect header and a few rows to guess units if needed
-    with transcript_csv.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        fields = reader.fieldnames or []
-        sc, ec, pc = _resolve_columns(fields, start_col, end_col, speaker_col)
-
-        # Peek up to 100 rows to find a reasonable max end time
-        sample_vals: List[float] = []
-        for i, row in enumerate(reader):
-            try:
-                sample_vals.append(float(row[ec]))
-            except Exception:
-                pass
-            if i >= 99:
-                break
-
-        # Re-open for the real pass
-    # Decide unit
-    if config.time_unit not in {"auto", "ms", "s", "samples"}:
-        raise ValueError("config.time_unit must be 'auto', 'ms', 's', or 'samples'")
-
-    guessed_unit = None
-    if config.time_unit == "auto":
-        max_end = max(sample_vals) if sample_vals else 0.0
-        guessed_unit = _guess_time_unit(max_end, dur_s, n_samples)
-        unit = guessed_unit
+    if device == "cpu":
+        # Make sure the child won’t try CUDA
+        env.update({"CUDA_VISIBLE_DEVICES": "", "USE_CUDA": "0", "FORCE_CPU": "1"})
     else:
-        unit = config.time_unit
+        # Best-effort: prepend cuDNN wheel's lib dir if available
+        try:
+            import nvidia.cudnn, pathlib  # type: ignore
+            cudnn_lib = str(pathlib.Path(nvidia.cudnn.__file__).with_name("lib"))
+            env["LD_LIBRARY_PATH"] = cudnn_lib + ":" + env.get("LD_LIBRARY_PATH", "")
+        except Exception:
+            pass
 
-    if _os.environ.get("CHOPSHOP_DEBUG") == "1":
-        print(f"[emb] audio duration: {dur_s:.3f}s @ {sr}Hz (samples={n_samples})")
-        if guessed_unit:
-            print(f"[emb] time unit guessed -> {guessed_unit}")
-        print(f"[emb] time unit in use -> {unit}")
+    cmd = [
+        sys.executable, "-m", extractor_module,
+        "--source_wav", str(source_wav),
+        "--output_dir", str(out_dir_final),
+        "--model_name", model_name,
+        "--device", device,
+        "--compute_type", compute_type,
+    ]
 
-    # Conversion lambdas
-    if unit == "s":
-        to_sec = lambda x: float(x)
-        to_idx = lambda t: int(round(float(t) * sr))
-    elif unit == "ms":
-        to_sec = lambda x: float(x) * 0.001
-        to_idx = lambda t: int(round(float(t) * sr * 0.001))
-    elif unit == "samples":
-        to_sec = lambda x: float(x) / float(sr)
-        to_idx = lambda t: int(round(float(t)))
+    if transcript_csv is not None:
+        transcript_csv = Path(transcript_csv).resolve()
+        cmd += ["--transcript_csv", str(transcript_csv), "--time_unit", time_unit]
     else:
-        raise RuntimeError("Unexpected time unit.")
+        cmd += [
+            "--strategy", strategy,
+            "--window_s", str(window_s),
+            "--hop_s", str(hop_s),
+            "--min_seg_s", str(min_seg_s),
+            "--top_db", str(top_db),
+            "--aggregate", aggregate,
+        ]
 
-    # Real pass
-    n_total = n_parsed = n_kept = 0
-    n_oob = n_too_short = n_shape_skip = 0
+    if verbose:
+        print("Launching embedding subprocess:")
+        print(" ", shlex.join(cmd))
 
-    with transcript_csv.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        fields = reader.fieldnames or []
-        sc, ec, pc = _resolve_columns(fields, start_col, end_col, speaker_col)
+    try:
+        res = subprocess.run(cmd, check=True, env=env, capture_output=True, text=True)
+        if verbose and res.stdout:
+            print(res.stdout.strip())
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Embedding subprocess failed with code {e.returncode}\n"
+            f"CMD: {shlex.join(cmd)}\n"
+            f"STDOUT:\n{(e.stdout or '').strip()}\n\n"
+            f"STDERR:\n{(e.stderr or '').strip()}"
+        ) from e
 
-        for row in reader:
-            n_total += 1
-            try:
-                t0_sec = to_sec(row[sc])
-                t1_sec = to_sec(row[ec])
-            except Exception:
-                continue
-            if not (t1_sec > t0_sec):
-                continue
-            n_parsed += 1
+    if not output_csv.exists():
+        raise FileNotFoundError(f"Expected embeddings CSV not found: {output_csv}")
 
-            s = max(0, min(n_samples, to_idx(row[sc])))
-            e = max(0, min(n_samples, to_idx(row[ec])))
-            if e <= s:
-                n_oob += 1
-                continue
-
-            # Slice; skip ultra tiny after rounding (< 2 samples)
-            if e - s < 2:
-                n_too_short += 1
-                continue
-
-            clip = audio[s:e]
-
-            # Build input features (float32, no torch)
-            feats = fe(clip, sampling_rate=sr, return_tensors="np")["input_features"]
-
-            # Encode with CT2, trying both layouts; pool to [D]
-            vec = _encode_features_any_layout(ct2_model, feats)
-
-            # --- Debug: show raw candidate shapes for the first few rows ---
-            if _os.environ.get("CHOPSHOP_DEBUG") == "1" and n_parsed <= 3:
-                try:
-                    a = np.ascontiguousarray(feats.astype("float32", copy=False))
-                    a1 = a if a.ndim == 3 else a[None, ...]
-                    a2 = np.transpose(a1, (0, 2, 1))
-                    print(f"[emb] feats shapes tried: {getattr(a1, 'shape', None)} and {getattr(a2, 'shape', None)}")
-                except Exception:
-                    pass
-            # ----------------------------------------------------------------
-
-            if vec is None:
-                n_shape_skip += 1
-                continue
-
-            if embed_dim is None:
-                embed_dim = int(vec.shape[-1])
-
-            speaker = row.get(pc, "SPEAKER_0")
-            rows_out.append([row[sc], row[ec], speaker] + vec.tolist())
-            n_kept += 1
-
-
-    # 5) Write CSV (header even if empty)
-    if embed_dim is None:
-        header = ["start_time", "end_time", "speaker"]
-    else:
-        header = ["start_time", "end_time", "speaker"] + [f"e{i}" for i in range(embed_dim)]
-
-    with output_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(rows_out)
-
-    if _os.environ.get("CHOPSHOP_DEBUG") == "1":
-        print(f"[emb] rows: total={n_total}, parsed={n_parsed}, kept={n_kept}, oob={n_oob}, tiny={n_too_short}, shape_skip={n_shape_skip}")
-        print(f"[emb] columns: {header}")
-        print(f"[emb] wrote: {output_csv}")
+    if verbose:
+        print(f"Embeddings CSV written to: {output_csv}")
 
     return output_csv
 
 
-# ----------------------------
-# CLI
-# ----------------------------
-if __name__ == "__main__":
+# --- CLI support: run this module directly -----------------------------------
+def _build_arg_parser():
     import argparse
-    p = argparse.ArgumentParser(description="Export Whisper encoder embeddings per transcript segment.")
-    p.add_argument("--transcript_csv", required=True)
-    p.add_argument("--source_wav", required=True)
-    p.add_argument("--output_dir", default=None)  # ← changed
+    p = argparse.ArgumentParser(
+        description="ChopShop: export Whisper encoder embeddings (env-safe wrapper)."
+    )
+    # required
+    p.add_argument("--source_wav", required=True, help="Path to input WAV")
+
+    # optional transcript-driven mode
+    p.add_argument("--transcript_csv", default=None, help="Transcript CSV for segment-level embeddings")
+    p.add_argument("--time_unit", default="auto", choices=("auto", "ms", "s", "samples"))
+
+    # general-audio mode
+    p.add_argument("--strategy", default="windows", choices=("windows", "nonsilent"))
+    p.add_argument("--window_s", type=float, default=30.0)
+    p.add_argument("--hop_s", type=float, default=15.0)
+    p.add_argument("--min_seg_s", type=float, default=1.0)
+    p.add_argument("--top_db", type=float, default=30.0)
+    p.add_argument("--aggregate", default="none", choices=("none", "mean"))
+
+    # outputs
+    p.add_argument("--output_dir", default=None, help="Output directory for the CSV")
+
+    # model/runtime
     p.add_argument("--model_name", default="base")
     p.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     p.add_argument("--compute_type", default="float16")
-    p.add_argument("--time_unit", default="auto", choices=("auto", "ms", "s", "samples"))
-    args = p.parse_args()
 
-    out = export_segment_embeddings_csv(
-        transcript_csv=args.transcript_csv,
+    # execution strategy
+    p.add_argument("--run_in_subprocess", action="store_true", default=True,
+                   help="(default) Run extractor in a subprocess")
+    p.add_argument("--no-subprocess", dest="run_in_subprocess", action="store_false",
+                   help="Run in-process (only if you're sure no CUDA/Torch conflicts)")
+    p.add_argument("--verbose", action="store_true", default=True)
+    p.add_argument("--quiet", dest="verbose", action="store_false")
+
+    # advanced
+    p.add_argument("--extractor_module", default="chopshop.audio.extract_whisper_embeddings_subproc",
+                   help="Python module to run for the actual extraction")
+    return p
+
+def main():
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    # Call the same function this module exposes as a class method.
+    # We don't use 'self' internally, so pass None.
+    out = extract_whisper_embeddings(
         source_wav=args.source_wav,
-        output_dir=args.output_dir,   # ← changed
-        config=EmbedConfig(
-            model_name=args.model_name,
-            device=args.device,
-            compute_type=args.compute_type,
-            time_unit=args.time_unit,
-        ),
+        transcript_csv=args.transcript_csv,
+        time_unit=args.time_unit,
+        strategy=args.strategy,
+        window_s=args.window_s,
+        hop_s=args.hop_s,
+        min_seg_s=args.min_seg_s,
+        top_db=args.top_db,
+        aggregate=args.aggregate,
+        output_dir=args.output_dir,
+        model_name=args.model_name,
+        device=args.device,
+        compute_type=args.compute_type,
+        run_in_subprocess=args.run_in_subprocess,
+        verbose=args.verbose,
+        extractor_module=args.extractor_module,
     )
-    print(f"Wrote: {out}")
+    print(str(out))
+
+if __name__ == "__main__":
+    main()

@@ -79,7 +79,7 @@ def split_audio_streams_to_wav(
     output_dir: str | os.PathLike,
     sample_rate: int = 48000,
     bit_depth: int = 16,
-    overwrite: bool = False,
+    overwrite: bool = True,
 ) -> List[str]:
     """
     Extract each audio stream in `input_path` to a separate WAV in `output_dir`.

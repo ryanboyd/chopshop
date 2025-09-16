@@ -3,13 +3,13 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
-import os
+import re
 import sys
 import tempfile
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Sequence, Tuple, Union
 
 PathLike = Union[str, Path]
 
@@ -52,6 +52,34 @@ def _bucket_of_key(key_tuple: Tuple[str, ...], num_buckets: int) -> int:
     # Stable across processes and platforms (unlike Python's salted hash()).
     h = hashlib.blake2b("|".join(key_tuple).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(h, "little") % max(1, num_buckets)
+
+# -----------------------------------------
+# Other Helpers, primarily around filenames
+# -----------------------------------------
+
+def _sanitize_for_filename(s: str) -> str:
+    s2 = re.sub(r"[^0-9A-Za-z]+", "_", str(s)).strip("_")
+    return s2 or "x"
+
+def _default_csv_out_path(in_csv: Path, mode: str, text_cols: Sequence[str], group_by: Optional[Sequence[str]]) -> Path:
+    stem = in_csv.stem
+    if group_by:
+        suffix = "grouped_" + "_".join(_sanitize_for_filename(g) for g in group_by)
+    else:
+        suffix = _sanitize_for_filename(mode) + "_" + "_".join(_sanitize_for_filename(c) for c in text_cols)
+    return in_csv.parent / f"{stem}_{suffix}.csv"
+
+def _default_txt_out_path(root_dir: Path, *, id_from: str, recursive: bool, pattern: str) -> Path:
+    stem = root_dir.name
+    parts = ["txt"]
+    if id_from != "stem":
+        parts.append(f"id{id_from}")
+    if recursive:
+        parts.append("recursive")
+    if pattern and pattern != "*.txt":
+        parts.append(_sanitize_for_filename(pattern))
+    return root_dir / f"{stem}_{'_'.join(parts)}.csv"
+
 
 @dataclass(frozen=True)
 class _LRUHandle:
@@ -142,7 +170,7 @@ def _open_out_csv(
 def csv_to_analysis_ready_csv(
     *,
     csv_path: PathLike,
-    out_csv: PathLike,
+    out_csv: PathLike | None = None,
     text_cols: Sequence[str],
     id_cols: Sequence[str] | None = None,
     mode: str = "concat",                 # "concat" or "separate"
@@ -180,8 +208,6 @@ def csv_to_analysis_ready_csv(
         Path to the written CSV.
     """
     in_path = _ensure_path(csv_path)
-    out_path = _ensure_path(out_csv)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Detect delimiter if not provided
     if delimiter is None:
@@ -199,6 +225,12 @@ def csv_to_analysis_ready_csv(
     include_source_col = (mode == "separate")
     include_source_path = False  # this function deals with CSV; folder variant uses this flag
 
+    # Decide output path (default next to input if not specified)
+    out_path = _ensure_path(out_csv) if out_csv is not None else _default_csv_out_path(
+        in_csv=in_path, mode=mode, text_cols=text_cols, group_by=group_by)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+
     # If no grouping, we can stream straight to the output
     if not group_by:
         writer, fh, _ = _open_out_csv(out_path, include_source_col, include_source_path)
@@ -208,7 +240,7 @@ def csv_to_analysis_ready_csv(
                 headers = rdr.fieldnames or []
                 missing = [c for c in (id_cols or []) + text_cols if c not in headers]
                 if missing:
-                    raise ValueError(f"Missing columns: {missing}")
+                    raise ValueError(f"Missing columns: {missing}. Make sure that you try specifying a delimiter manually if you see this error message.")
 
                 for idx, row in enumerate(rdr, start=1):
                     text_id = _compose_id([row.get(c, "") for c in (id_cols or [])]) if id_cols else f"row_{idx}"
@@ -251,7 +283,7 @@ def csv_to_analysis_ready_csv(
             headers = rdr.fieldnames or []
             missing = [c for c in group_by + text_cols if c not in headers]
             if missing:
-                raise ValueError(f"Missing columns: {missing}")
+                raise ValueError(f"Missing columns: {missing}. Make sure that you try specifying a delimiter manually if you see this error message.")
 
             for row in rdr:
                 key_tuple = tuple(row[g] for g in group_by)
@@ -327,7 +359,7 @@ def csv_to_analysis_ready_csv(
 def txt_folder_to_analysis_ready_csv(
     *,
     root_dir: PathLike,
-    out_csv: PathLike,
+    out_csv: PathLike | None = None,
     recursive: bool = False,
     pattern: str = "*.txt",
     encoding: str = "utf-8",
@@ -338,7 +370,8 @@ def txt_folder_to_analysis_ready_csv(
     Stream a folder of .txt files into an analysis-ready CSV: text_id,text[,source_path]
     """
     root = _ensure_path(root_dir)
-    out_path = _ensure_path(out_csv)
+    out_path = _ensure_path(out_csv) if out_csv is not None else _default_txt_out_path(
+        root, id_from=id_from, recursive=recursive, pattern=pattern)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     writer, fh, _ = _open_out_csv(out_path, include_source_col=False, include_source_path=include_source_path)
@@ -385,7 +418,10 @@ if __name__ == "__main__":
     io_group.add_argument("--csv", type=Path, help="Path to input CSV file.")
     io_group.add_argument("--txt-dir", type=Path, help="Path to a folder containing .txt files.")
 
-    parser.add_argument("--out", type=Path, required=True, help="Output CSV path to write.")
+    parser.add_argument("--out", type=Path, required=False,
+                        help="Output CSV path. If omitted, a default is created next to the input (e.g., "
+                             "<inputstem>_grouped_<cols>.csv or <inputstem>_<mode>_<textcols>.csv for CSV mode; "
+                             "<foldername>_txt[...].csv for TXT mode).")
 
     # Common parsing options
     parser.add_argument("--encoding", default="utf-8-sig", help="Input text/CSV encoding. Default: utf-8-sig")

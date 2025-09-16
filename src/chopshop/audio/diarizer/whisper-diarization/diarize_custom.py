@@ -80,7 +80,7 @@ parser.add_argument(
 parser.add_argument(
     "--whisper-model",
     dest="model_name",
-    default="medium.en",
+    default="base",
     help="Whisper model name (e.g., base, small, medium.en, large-v3)",
 )
 
@@ -245,13 +245,33 @@ def _supports_kw(func, name: str) -> bool:
     except Exception:
         return False
 
+# Replace this block in diarize_custom.py
+# --------------------------------------
+# diarize_kwargs = {}
+# if args.num_speakers is not None:
+#     # Try common kw names used across implementations
+#     for key in ("num_speakers", "oracle_num_speakers", "max_num_speakers"):
+#         if _supports_kw(diarizer_model.diarize, key):
+#             diarize_kwargs[key] = args.num_speakers
+#             break
+
+# With this:
 diarize_kwargs = {}
 if args.num_speakers is not None:
-    # Try common kw names used across implementations
-    for key in ("num_speakers", "oracle_num_speakers", "max_num_speakers"):
-        if _supports_kw(diarizer_model.diarize, key):
-            diarize_kwargs[key] = args.num_speakers
-            break
+    # Always pass the actual count if supported
+    if _supports_kw(diarizer_model.diarize, "num_speakers"):
+        diarize_kwargs["num_speakers"] = int(args.num_speakers)
+
+    # Tell NeMo to use the provided count (boolean flag)
+    if _supports_kw(diarizer_model.diarize, "oracle_num_speakers"):
+        diarize_kwargs["oracle_num_speakers"] = True
+
+    # Some wrappers only expose min/max; clamp both to the same value
+    if _supports_kw(diarizer_model.diarize, "min_num_speakers"):
+        diarize_kwargs["min_num_speakers"] = int(args.num_speakers)
+    if _supports_kw(diarizer_model.diarize, "max_num_speakers"):
+        diarize_kwargs["max_num_speakers"] = int(args.num_speakers)
+
 
 speaker_ts = diarizer_model.diarize(
     torch.from_numpy(audio_waveform).unsqueeze(0),
@@ -349,4 +369,6 @@ print(f"[custom] CSV written: {csv_written}")
 # -------------------------
 # Cleanup
 # -------------------------
+print("Cleaning up...")
 cleanup(temp_path)
+print("Done cleaning up.")
