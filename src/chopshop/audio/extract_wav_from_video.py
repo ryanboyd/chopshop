@@ -122,6 +122,8 @@ def split_audio_streams_to_wav(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"Extracting audio streams from {input_path} to {out_dir} at {sample_rate} Hz, bit depth: {bit_depth}")
+
     streams = _probe_audio_streams(in_path)
     if not streams:
         raise ValueError("No audio streams found in input.")
@@ -140,6 +142,13 @@ def split_audio_streams_to_wav(
         tags = s.get("tags", {}) or {}
         lang = tags.get("language")
         title = tags.get("title")
+
+        print(f"Extracting audio stream:\n"
+              f"index: {idx}\n"
+              f"tags: {tags}\n"
+              f"language: {lang}\n"
+              f"title: {title}\n")
+
 
         out_name = _build_wav_name(base, idx, lang, title)
         out_path = out_dir / out_name

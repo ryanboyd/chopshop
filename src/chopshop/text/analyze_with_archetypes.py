@@ -16,7 +16,7 @@ def analyze_with_archetypes(
     analysis_csv: Optional[Union[str, Path]] = None,   # <- NEW: skip gathering if provided
 
     # ----- Output -----
-    out_features_csv: Union[str, Path],
+    out_features_csv: Optional[Union[str, Path]] = None,
 
     # ----- Archetype CSVs (one or more) -----
     archetype_csvs: Sequence[Union[str, Path]],
@@ -53,9 +53,6 @@ def analyze_with_archetypes(
       text_id, WC, <fileprefix>__<ArchetypeName>, ...
     """
 
-    out_features_csv = Path(out_features_csv)
-    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
-
     # 1) Use analysis-ready CSV if given; otherwise gather from csv_path or txt_dir
     if analysis_csv is not None:
         analysis_ready = Path(analysis_csv)
@@ -68,7 +65,6 @@ def analyze_with_archetypes(
             analysis_ready = Path(
                 csv_to_analysis_ready_csv(
                     csv_path=csv_path,
-                    #out_csv=out_features_csv,
                     text_cols=list(text_cols),
                     id_cols=list(id_cols) if id_cols else None,
                     mode=mode,
@@ -85,7 +81,6 @@ def analyze_with_archetypes(
             analysis_ready = Path(
                 txt_folder_to_analysis_ready_csv(
                     root_dir=txt_dir,
-                    #out_csv=out_features_csv,
                     recursive=recursive,
                     pattern=pattern,
                     encoding=encoding,
@@ -112,6 +107,14 @@ def analyze_with_archetypes(
                 )
             for row in reader:
                 yield str(row[id_col]), (row.get(text_col) or "")
+
+    
+    # 1b) Decide default features path if not provided:
+    #     <analysis_ready_dir>/features/archetypes/<analysis_ready_filename>
+    if out_features_csv is None:
+        out_features_csv = Path.cwd() / "features" / "archetypes" / analysis_ready.name
+    out_features_csv = Path(out_features_csv)
+    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
 
     maa.analyze_texts_to_csv(
         items=_iter_items_from_csv(analysis_ready),
