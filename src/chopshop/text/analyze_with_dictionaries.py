@@ -16,7 +16,7 @@ def analyze_with_dictionaries(
     analysis_csv: Optional[Union[str, Path]] = None,  # if provided, gathering is skipped
 
     # ----- Output -----
-    out_features_csv: Union[str, Path],
+    out_features_csv: Optional[Union[str, Path]] = None,
 
     # ----- Dictionaries -----
     dict_paths: Sequence[Union[str, Path]],
@@ -55,9 +55,6 @@ def analyze_with_dictionaries(
     Returns the path to `out_features_csv`.
     """
 
-    out_features_csv = Path(out_features_csv)
-    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
-
     # 1) Produce or accept the analysis-ready CSV (must have columns: text_id,text)
     if analysis_csv is not None:
         analysis_ready = Path(analysis_csv)
@@ -71,7 +68,6 @@ def analyze_with_dictionaries(
             analysis_ready = Path(
                 csv_to_analysis_ready_csv(
                     csv_path=csv_path,
-                    out_csv=out_features_csv.with_name("analysis_ready.csv"),
                     text_cols=list(text_cols),
                     id_cols=list(id_cols) if id_cols else None,
                     mode=mode,
@@ -88,7 +84,6 @@ def analyze_with_dictionaries(
             analysis_ready = Path(
                 txt_folder_to_analysis_ready_csv(
                     root_dir=txt_dir,
-                    out_csv=out_features_csv.with_name("analysis_ready.csv"),
                     recursive=recursive,
                     pattern=pattern,
                     encoding=encoding,
@@ -96,6 +91,14 @@ def analyze_with_dictionaries(
                     include_source_path=include_source_path,
                 )
             )
+
+    # 1b) Decide default features path if not provided:
+    #     <cwd>/features/dictionary/<analysis_ready_filename>
+    if out_features_csv is None:
+        out_features_csv = Path.cwd() / "features" / "dictionary" / analysis_ready.name
+    out_features_csv = Path(out_features_csv)
+    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
+
 
     # 2) Validate dictionaries
     dict_paths = [Path(p) for p in dict_paths]
