@@ -188,3 +188,6 @@ install-instructions.txt
 
 # custom test script
 runme.py
+
+# other stuff to omit
+chopshop-big.png
