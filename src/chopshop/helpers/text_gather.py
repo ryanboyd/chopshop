@@ -9,7 +9,7 @@ import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple, Union
+from typing import Dict, List, Sequence, Tuple, Union, Optional
 
 PathLike = Union[str, Path]
 
@@ -171,6 +171,7 @@ def csv_to_analysis_ready_csv(
     *,
     csv_path: PathLike,
     out_csv: PathLike | None = None,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
     text_cols: Sequence[str],
     id_cols: Sequence[str] | None = None,
     mode: str = "concat",                 # "concat" or "separate"
@@ -230,6 +231,9 @@ def csv_to_analysis_ready_csv(
         in_csv=in_path, mode=mode, text_cols=text_cols, group_by=group_by)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if not overwrite_existing and Path(out_path).is_file():
+        print("File already exists, returning existing file.")
+        return out_path
 
     # If no grouping, we can stream straight to the output
     if not group_by:
@@ -363,8 +367,10 @@ def txt_folder_to_analysis_ready_csv(
     recursive: bool = False,
     pattern: str = "*.txt",
     encoding: str = "utf-8",
-    id_from: str = "stem",           # "stem" | "name" | "path"
-    include_source_path: bool = True # writes 'source_path' column
+    id_from: str = "stem",            # "stem" | "name" | "path"
+    include_source_path: bool = True, # writes 'source_path' column
+    overwrite_existing: bool = False  # if the file already exists, let's not overwrite by default
+
 ) -> Path:
     """
     Stream a folder of .txt files into an analysis-ready CSV: text_id,text[,source_path]
@@ -373,6 +379,10 @@ def txt_folder_to_analysis_ready_csv(
     out_path = _ensure_path(out_csv) if out_csv is not None else _default_txt_out_path(
         root, id_from=id_from, recursive=recursive, pattern=pattern)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not overwrite_existing and Path(out_path).is_file():
+        print("File already exists, returning existing file.")
+        return out_path
 
     writer, fh, _ = _open_out_csv(out_path, include_source_col=False, include_source_path=include_source_path)
     try:
@@ -426,6 +436,9 @@ if __name__ == "__main__":
     # Common parsing options
     parser.add_argument("--encoding", default="utf-8-sig", help="Input text/CSV encoding. Default: utf-8-sig")
 
+    parser.add_argument("--overwrite-existing", type=bool, default=False,
+                        help="Do you want to overwrite the output file if it already exists?")
+
     # CSV mode options
     parser.add_argument("--text-col", action="append", dest="text_cols",
                         help="Text column to use (repeat for multiple). REQUIRED for --csv.")
@@ -457,6 +470,7 @@ if __name__ == "__main__":
                         help="How to form text_id for .txt files. Default: stem")
     parser.add_argument("--no-source-path", action="store_true",
                         help="Do NOT include source_path column for .txt folder mode.")
+    
 
     args = parser.parse_args()
 

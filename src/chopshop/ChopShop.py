@@ -25,15 +25,22 @@ class ChopShop:
         self.helpers = _HelpersAPI(self)
 
     # back-compat pass-throughs
+    
+    # audio
     def extract_wavs_from_video(self, **kwargs):                return self.audio.extract_wavs_from_video(**kwargs)
     def split_wav_by_speaker(self, **kwargs):                   return self.audio.split_wav_by_speaker(**kwargs)
     def extract_whisper_embeddings(self, **kwargs):             return self.audio.extract_whisper_embeddings(**kwargs)
     def diarize_with_thirdparty(self, **kwargs):                return self.audio.diarize_with_thirdparty(**kwargs)
+    
+    #text
     def analyze_with_dictionaries(self, **kwargs):              return self.text.analyze_with_dictionaries(**kwargs)
     def analyze_with_archetypes(self, **kwargs):                return self.text.analyze_with_archetypes(**kwargs)
+    def extract_sentence_embeddings(self, **kwargs):            return self.text.extract_sentence_embeddings(**kwargs)
+    
+    # helpers
     def txt_folder_to_analysis_ready_csv(self, **kwargs):       return self.helpers.txt_folder_to_analysis_ready_csv(**kwargs)
-    def csv_to_analysis_ready_csv(self, **kwargs):              return self.text.csv_to_analysis_ready_csv(**kwargs)
-
+    def csv_to_analysis_ready_csv(self, **kwargs):              return self.helpers.csv_to_analysis_ready_csv(**kwargs)
+    
 
     def txt_folder_to_analysis_ready_csv(self, **kwargs):
         from .helpers.text_gather import txt_folder_to_analysis_ready_csv
@@ -64,6 +71,7 @@ class _AudioAPI:
 
 
 class _TextAPI:
+
     def __init__(self, parent: ChopShop): self._cs = parent
 
     def analyze_with_dictionaries(self, **kwargs):
@@ -73,6 +81,10 @@ class _TextAPI:
     def analyze_with_archetypes(self, **kwargs):
         from .text.analyze_with_archetypes import analyze_with_archetypes
         return _forward(analyze_with_archetypes, kwargs)
+    
+    def extract_sentence_embeddings(self, **kwargs):
+        from .text.extract_sentence_embeddings import analyze_with_sentence_embeddings
+        return _forward(analyze_with_sentence_embeddings, kwargs)
 
 
 class _HelpersAPI:

@@ -159,6 +159,11 @@ def _guess_time_unit(max_end: float, dur_s: float, n_samples: int) -> str:
     # Fallback: assume seconds if not wildly off
     return "s"
 
+def l2_normalize(v, eps=1e-12):
+    n = np.linalg.norm(v)
+    return v if n < eps else v / n
+
+
 
 @dataclass
 class EmbedConfig:
@@ -181,6 +186,7 @@ def export_segment_embeddings_csv(
     start_col: str = "start_time",
     end_col: str = "end_time",
     speaker_col: str = "speaker",
+    apply_l2_normalization: bool = False,
     sr: int = 16000,
 ) -> Path:
     """
@@ -331,6 +337,9 @@ def export_segment_embeddings_csv(
                 n_shape_skip += 1
                 continue
 
+            if apply_l2_normalization:
+                vec = l2_normalize(vec)
+
             if embed_dim is None:
                 embed_dim = int(vec.shape[-1])
 
@@ -373,6 +382,7 @@ def export_audio_embeddings_csv(
     hop_s: float = 15.0,
     min_seg_s: float = 1.0,
     top_db: float = 30.0,
+    apply_l2_normalization: bool = False,
     aggregate: Literal["none", "mean"] = "none",
 ) -> Path:
     """
@@ -478,6 +488,8 @@ def export_audio_embeddings_csv(
     # 5) Aggregate if requested
     if vectors and aggregate == "mean":
         vec = np.vstack(vectors).mean(axis=0)
+        if apply_l2_normalization:
+            vec = l2_normalize(vec)
         embed_dim = int(vec.shape[-1])
         rows_out = [["0.000", f"{n/float(sr):.3f}", "GLOBAL_MEAN"] + vec.tolist()]
 
@@ -526,6 +538,7 @@ if __name__ == "__main__":
     p.add_argument("--min_seg_s", type=float, default=1.0)
     p.add_argument("--top_db", type=float, default=30.0)
     p.add_argument("--aggregate", default="none", choices=("none", "mean"))
+    p.add_argument("--apply_l2_normalization", type=bool, default=False)
 
     args = p.parse_args()
 
@@ -542,6 +555,7 @@ if __name__ == "__main__":
             source_wav=args.source_wav,
             output_dir=args.output_dir,
             config=cfg,
+            apply_l2_normalization=args.apply_l2_normalization,
         )
     else:
         out = export_audio_embeddings_csv(
@@ -554,6 +568,7 @@ if __name__ == "__main__":
             min_seg_s=args.min_seg_s,
             top_db=args.top_db,
             aggregate=args.aggregate,
+            apply_l2_normalization=args.apply_l2_normalization,
         )
     print(f"Wrote: {out}")
 

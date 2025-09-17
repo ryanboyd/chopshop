@@ -130,3 +130,101 @@ def analyze_with_archetypes(
     )
 
     return out_features_csv
+
+
+
+# --- CLI ------------------------------------------------------------
+def _build_arg_parser():
+    import argparse
+    p = argparse.ArgumentParser(
+        description="Archetype scoring into a single CSV (globals once + per-archetype blocks)."
+    )
+
+    # Input source (choose one)
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--csv", dest="csv_path", help="Source CSV to gather from")
+    src.add_argument("--txt-dir", dest="txt_dir", help="Folder of .txt files to gather from")
+    src.add_argument("--analysis-csv", dest="analysis_csv",
+                     help="Use an existing analysis-ready CSV (skip gathering)")
+
+    # Output
+    p.add_argument("--out", dest="out_features_csv", default=None,
+                   help="Output CSV (default: ./features/archetypes/<gathered_name>)")
+
+    # Archetype CSVs (repeatable)
+    p.add_argument("--archetype", dest="archetype_csvs", action="append", required=True,
+                   help="Path to an archetype CSV (repeat for multiple)")
+
+    # I/O
+    p.add_argument("--encoding", default="utf-8-sig")
+    p.add_argument("--delimiter", default=",")
+
+    # CSV gather options
+    p.add_argument("--text-col", dest="text_cols", action="append",
+                   help="Text column (repeatable). Default: --text-col text")
+    p.add_argument("--id-col", dest="id_cols", action="append",
+                   help="ID column(s) (repeatable)")
+    p.add_argument("--mode", choices=["concat", "separate"], default="concat")
+    p.add_argument("--group-by", dest="group_by", action="append",
+                   help="Group by column(s) (repeatable)")
+    p.add_argument("--joiner", default=" ")
+    p.add_argument("--num-buckets", type=int, default=512)
+    p.add_argument("--max-open-bucket-files", type=int, default=64)
+    p.add_argument("--tmp-root", default=None)
+
+    # TXT gather options
+    p.add_argument("--recursive", action="store_true", default=True)
+    p.add_argument("--no-recursive", dest="recursive", action="store_false")
+    p.add_argument("--pattern", default="*.txt")
+    p.add_argument("--id-from", choices=["stem", "name", "path"], default="stem")
+    p.add_argument("--include-source-path", action="store_true", default=True)
+    p.add_argument("--no-include-source-path", dest="include_source_path", action="store_false")
+
+    # Archetyper scoring options
+    p.add_argument("--model-name", default="sentence-transformers/all-roberta-large-v1")
+    p.add_argument("--mean-center-vectors", action="store_true", default=True)
+    p.add_argument("--no-mean-center-vectors", dest="mean_center_vectors", action="store_false")
+    p.add_argument("--fisher-z-transform", action="store_true", default=False)
+    p.add_argument("--rounding", type=int, default=4)
+
+    return p
+
+
+def main():
+    args = _build_arg_parser().parse_args()
+
+    # Defaults for list-ish args
+    text_cols = args.text_cols if args.text_cols else ["text"]
+    id_cols = args.id_cols if args.id_cols else None
+    group_by = args.group_by if args.group_by else None
+
+    out = analyze_with_archetypes(
+        csv_path=args.csv_path,
+        txt_dir=args.txt_dir,
+        analysis_csv=args.analysis_csv,
+        out_features_csv=args.out_features_csv,
+        archetype_csvs=args.archetype_csvs,
+        encoding=args.encoding,
+        delimiter=args.delimiter,
+        text_cols=text_cols,
+        id_cols=id_cols,
+        mode=args.mode,
+        group_by=group_by,
+        joiner=args.joiner,
+        num_buckets=args.num_buckets,
+        max_open_bucket_files=args.max_open_bucket_files,
+        tmp_root=args.tmp_root,
+        recursive=args.recursive,
+        pattern=args.pattern,
+        id_from=args.id_from,
+        include_source_path=args.include_source_path,
+        model_name=args.model_name,
+        mean_center_vectors=args.mean_center_vectors,
+        fisher_z_transform=args.fisher_z_transform,
+        rounding=args.rounding,
+    )
+    print(str(out))
+
+
+if __name__ == "__main__":
+    main()

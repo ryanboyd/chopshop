@@ -1,61 +1,98 @@
+from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Literal, Union, Sequence, Iterable, Tuple
 import csv
+import re
+import sys
+import numpy as np
 
-from .dictionary_analyzers import multi_dict_analyzer as mda
+# Allow very large CSV fields (handles huge text safely).
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    csv.field_size_limit(2**31 - 1)
+
+# Lazy import to keep startup light.
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception as e:
+    SentenceTransformer = None  # type: ignore
+
 from ..helpers.text_gather import (
     csv_to_analysis_ready_csv,
     txt_folder_to_analysis_ready_csv,
 )
 
-def analyze_with_dictionaries(
+PathLike = Union[str, Path]
+
+def _split_sentences(text: str) -> list[str]:
+    """Prefer NLTK sent_tokenize if available; fallback to a simple regex."""
+    txt = (text or "").strip()
+    if not txt:
+        return []
+    try:
+        from nltk.tokenize import sent_tokenize  # type: ignore
+        return [s for s in sent_tokenize(txt) if s.strip()]
+    except Exception:
+        # crude but dependency-free: split on end punctuation + whitespace
+        parts = re.split(r"(?<=[.!?])\s+", txt)
+        return [p.strip() for p in parts if p.strip()]
+
+def _iter_items_from_csv(path: Path, *, id_col: str = "text_id", text_col: str = "text",
+                         encoding: str = "utf-8-sig", delimiter: str = ",") -> Iterable[Tuple[str, str]]:
+    with path.open("r", newline="", encoding=encoding) as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
+        if id_col not in reader.fieldnames or text_col not in reader.fieldnames:
+            raise ValueError(f"Expected columns '{id_col}' and '{text_col}' in {path}; found {reader.fieldnames}")
+        for row in reader:
+            yield str(row[id_col]), (row.get(text_col) or "")
+
+def analyze_with_sentence_embeddings(
     *,
     # ----- Input source (choose exactly one, or pass analysis_csv directly) -----
     csv_path: Optional[Union[str, Path]] = None,
     txt_dir: Optional[Union[str, Path]] = None,
-    analysis_csv: Optional[Union[str, Path]] = None,  # if provided, gathering is skipped
+    analysis_csv: Optional[Union[str, Path]] = None,
 
     # ----- Output -----
     out_features_csv: Optional[Union[str, Path]] = None,
 
-    # ----- Dictionaries -----
-    dict_paths: Sequence[Union[str, Path]],
-
     # ====== SHARED I/O OPTIONS ======
     encoding: str = "utf-8-sig",
+    delimiter: str = ",",
 
-    # ====== CSV GATHER OPTIONS ======
-    # Only used when csv_path is provided
+    # ====== CSV GATHER OPTIONS (when csv_path is provided) ======
     text_cols: Sequence[str] = ("text",),
     id_cols: Optional[Sequence[str]] = None,
     mode: Literal["concat", "separate"] = "concat",
     group_by: Optional[Sequence[str]] = None,
-    delimiter: str = ",",
     joiner: str = " ",
     num_buckets: int = 512,
     max_open_bucket_files: int = 64,
     tmp_root: Optional[Union[str, Path]] = None,
 
-    # ====== TXT FOLDER GATHER OPTIONS ======
-    # Only used when txt_dir is provided
+    # ====== TXT FOLDER GATHER OPTIONS (when txt_dir is provided) ======
     recursive: bool = True,
     pattern: str = "*.txt",
     id_from: Literal["stem", "name", "path"] = "stem",
     include_source_path: bool = True,
 
-    # ====== ANALYZER OPTIONS (passed through to ContentCoder) ======
-    relative_freq: bool = True,
-    drop_punct: bool = True,
-    rounding: int = 4,
-    retain_captures: bool = False,
-    wildcard_mem: bool = True,
+    # ====== SentenceTransformer options ======
+    model_name: str = "sentence-transformers/all-roberta-large-v1",
+    batch_size: int = 32,
+    normalize_l2: bool = False,       # set True if you want unit-length vectors
+    rounding: Optional[int] = None,   # None = full precision; e.g., 6 for ~float32-ish text
+    show_progress: bool = False,
 ) -> Path:
-    """Gather text into an analysis-ready CSV and pipe it to multi_dict_analyzer,
-    which writes one wide CSV with globals once (from first dict) then per-dict blocks.
-    Returns the path to `out_features_csv`.
     """
+    Build/accept an analysis-ready CSV (columns: text_id,text) and write
+    one average sentence-embedding vector per row:
+        text_id, e0, e1, ..., e{D-1}
 
-    # 1) Produce or accept the analysis-ready CSV (must have columns: text_id,text)
+    If out_features_csv is not provided, defaults to:
+        ./features/sentence-embeddings/<analysis_ready_filename>
+    """
+    # 1) analysis-ready CSV
     if analysis_csv is not None:
         analysis_ready = Path(analysis_csv)
         if not analysis_ready.exists():
@@ -63,7 +100,6 @@ def analyze_with_dictionaries(
     else:
         if (csv_path is None) == (txt_dir is None):
             raise ValueError("Provide exactly one of csv_path or txt_dir (or pass analysis_csv).")
-
         if csv_path is not None:
             analysis_ready = Path(
                 csv_to_analysis_ready_csv(
@@ -92,48 +128,55 @@ def analyze_with_dictionaries(
                 )
             )
 
-    # 1b) Decide default features path if not provided:
-    #     <cwd>/features/dictionary/<analysis_ready_filename>
+    # 1b) default output path
     if out_features_csv is None:
-        out_features_csv = Path.cwd() / "features" / "dictionary" / analysis_ready.name
+        out_features_csv = Path.cwd() / "features" / "sentence-embeddings" / analysis_ready.name
     out_features_csv = Path(out_features_csv)
     out_features_csv.parent.mkdir(parents=True, exist_ok=True)
 
+    # 2) load model
+    if SentenceTransformer is None:
+        raise ImportError(
+            "sentence-transformers is required. Install with `pip install sentence-transformers`."
+        )
+    model = SentenceTransformer(model_name)
+    dim = int(getattr(model, "get_sentence_embedding_dimension", lambda: 768)())
 
-    # 2) Validate dictionaries
-    dict_paths = [Path(p) for p in dict_paths]
-    if not dict_paths:
-        raise ValueError("dict_paths must contain at least one dictionary file.")
-    for p in dict_paths:
-        if not p.exists():
-            raise FileNotFoundError(f"Dictionary not found: {p}")
+    # 3) header
+    header = ["text_id"] + [f"e{i}" for i in range(dim)]
 
-    # 3) Stream the analysis-ready CSV into the analyzer → features CSV
-    def _iter_items_from_csv(
-        path: Path, *, id_col: str = "text_id", text_col: str = "text"
-    ) -> Iterable[Tuple[str, str]]:
-        with path.open("r", newline="", encoding=encoding) as f:
-            reader = csv.DictReader(f, delimiter=delimiter)
-            if id_col not in reader.fieldnames or text_col not in reader.fieldnames:
-                raise ValueError(
-                    f"Expected columns '{id_col}' and '{text_col}' in {path}; found {reader.fieldnames}"
+    # 4) stream rows → split → encode → average → (optional) L2 normalize → write
+    def _norm(v: np.ndarray) -> np.ndarray:
+        if not normalize_l2:
+            return v
+        n = float(np.linalg.norm(v))
+        return v if n < 1e-12 else (v / n)
+
+    with out_features_csv.open("w", newline="", encoding=encoding) as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+
+        for text_id, text in _iter_items_from_csv(analysis_ready, encoding=encoding, delimiter=delimiter):
+            sents = _split_sentences(text)
+            if not sents:
+                vec = np.zeros((dim,), dtype=np.float32)
+            else:
+                emb = model.encode(
+                    sents,
+                    batch_size=batch_size,
+                    convert_to_numpy=True,
+                    normalize_embeddings=False,
+                    show_progress_bar=show_progress,
                 )
-            for row in reader:
-                yield str(row[id_col]), (row.get(text_col) or "")
+                # Average across sentences → one vector
+                vec = emb.mean(axis=0).astype(np.float32, copy=False)
+            vec = _norm(vec)
 
-    # Use multi_dict_analyzer as the middle layer (new API)
-    mda.analyze_texts_to_csv(
-        items=_iter_items_from_csv(analysis_ready),
-        dict_files=dict_paths,
-        out_csv=out_features_csv,
-        relative_freq=relative_freq,
-        drop_punct=drop_punct,
-        rounding=rounding,
-        retain_captures=retain_captures,
-        wildcard_mem=wildcard_mem,
-        id_col_name="text_id",
-        encoding=encoding,
-    )
+            if rounding is not None:
+                row = [text_id] + [round(float(x), int(rounding)) for x in vec.tolist()]
+            else:
+                row = [text_id] + [float(x) for x in vec.tolist()]
+            writer.writerow(row)
 
     return out_features_csv
 
@@ -143,23 +186,17 @@ def analyze_with_dictionaries(
 def _build_arg_parser():
     import argparse
     p = argparse.ArgumentParser(
-        description="ContentCoder: multi-dictionary coding into one CSV (globals once + per-dict blocks)."
+        description="Average sentence embeddings per row (Sentence-Transformers)."
     )
 
-    # Input source (choose one)
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--csv", dest="csv_path", help="Source CSV to gather from")
     src.add_argument("--txt-dir", dest="txt_dir", help="Folder of .txt files to gather from")
     src.add_argument("--analysis-csv", dest="analysis_csv",
                      help="Use an existing analysis-ready CSV (skip gathering)")
 
-    # Output
     p.add_argument("--out", dest="out_features_csv", default=None,
-                   help="Output CSV (default: ./features/dictionary/<gathered_name>)")
-
-    # Dictionaries (repeatable)
-    p.add_argument("--dict", dest="dict_paths", action="append", required=True,
-                   help="Path to a .dicx dictionary (repeat this flag for multiple)")
+                   help="Output CSV (default: ./features/sentence-embeddings/<gathered_name>)")
 
     # I/O
     p.add_argument("--encoding", default="utf-8-sig")
@@ -186,15 +223,14 @@ def _build_arg_parser():
     p.add_argument("--include-source-path", action="store_true", default=True)
     p.add_argument("--no-include-source-path", dest="include_source_path", action="store_false")
 
-    # Analyzer options (pass-through to ContentCoder)
-    p.add_argument("--relative-freq", action="store_true", default=True)
-    p.add_argument("--no-relative-freq", dest="relative_freq", action="store_false")
-    p.add_argument("--drop-punct", action="store_true", default=True)
-    p.add_argument("--no-drop-punct", dest="drop_punct", action="store_false")
-    p.add_argument("--retain-captures", action="store_true", default=False)
-    p.add_argument("--wildcard-mem", action="store_true", default=True)
-    p.add_argument("--no-wildcard-mem", dest="wildcard_mem", action="store_false")
-    p.add_argument("--rounding", type=int, default=4)
+    # Model options
+    p.add_argument("--model-name", default="sentence-transformers/all-roberta-large-v1")
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--normalize-l2", action="store_true", default=False,
+                   help="L2-normalize the final vector per row")
+    p.add_argument("--rounding", type=int, default=None,
+                   help="Round floats to N decimals (omit for full precision)")
+    p.add_argument("--show-progress", action="store_true", default=False)
 
     return p
 
@@ -206,18 +242,17 @@ def main():
     id_cols = args.id_cols if args.id_cols else None
     group_by = args.group_by if args.group_by else None
 
-    out = analyze_with_dictionaries(
+    out = analyze_with_sentence_embeddings(
         csv_path=args.csv_path,
         txt_dir=args.txt_dir,
         analysis_csv=args.analysis_csv,
         out_features_csv=args.out_features_csv,
-        dict_paths=args.dict_paths,
         encoding=args.encoding,
+        delimiter=args.delimiter,
         text_cols=text_cols,
         id_cols=id_cols,
         mode=args.mode,
         group_by=group_by,
-        delimiter=args.delimiter,
         joiner=args.joiner,
         num_buckets=args.num_buckets,
         max_open_bucket_files=args.max_open_bucket_files,
@@ -226,11 +261,11 @@ def main():
         pattern=args.pattern,
         id_from=args.id_from,
         include_source_path=args.include_source_path,
-        relative_freq=args.relative_freq,
-        drop_punct=args.drop_punct,
+        model_name=args.model_name,
+        batch_size=args.batch_size,
+        normalize_l2=args.normalize_l2,
         rounding=args.rounding,
-        retain_captures=args.retain_captures,
-        wildcard_mem=args.wildcard_mem,
+        show_progress=args.show_progress,
     )
     print(str(out))
 
