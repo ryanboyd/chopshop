@@ -76,6 +76,13 @@ def build_header_for_dicts(
     coders = _load_coders(dict_files)
     if not coders:
         raise ValueError("No dictionaries provided.")
+    
+    dict_names = [pref for pref, _ in coders]
+    print(
+        f"Analyzing with dictionaries: {text_id if text_id is not None else ''}\n\t"
+        + "\n\t".join(dict_names),
+        flush=True,
+    )
 
     header: List[str] = [id_col_name] if include_id_col else []
 
@@ -183,6 +190,8 @@ def analyze_texts_to_csv(
     coders = _load_coders(dict_files)
     if not coders:
         raise ValueError("No dictionaries provided.")
+    
+    dict_names = [pref for pref, _ in coders]
 
     # Header + index plans
     first_pref, first_cc = coders[0]
@@ -206,6 +215,12 @@ def analyze_texts_to_csv(
         writer.writerow(header)
 
         for text_id, text in items:
+            row_out: List[Union[str, float]] = [text_id]
+
+            print(
+                f"Analyzing with dictionaries: {text_id}\n\t" + "\n\t".join(dict_names),
+                flush=True,
+            )
             row_out: List[Union[str, float]] = [text_id]
 
             # First dict (globals + per-dict)

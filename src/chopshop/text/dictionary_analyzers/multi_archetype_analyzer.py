@@ -106,6 +106,8 @@ def analyze_texts_to_csv(
 
             all_scores: List[float] = []
             for pref, names, q in blocks:
+                print(f"Analyzing for archetypes: {text_id}\n\t"
+                      "\n\t".join(names))
                 q.analyze(
                     text,
                     mean_center_vectors=mean_center_vectors,

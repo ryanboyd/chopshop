@@ -8,10 +8,10 @@ Requirements:
   - ffmpeg and ffprobe must be installed and on PATH.
 
 Importable API:
-  split_audio_streams_to_wav(input_path, output_dir, sample_rate=48000, bit_depth=16, overwrite=False) -> list[str]
+  split_audio_streams_to_wav(input_path, output_dir=None, sample_rate=48000, bit_depth=16, overwrite=False) -> list[str]
 
 CLI usage:
-  python split_audio_streams.py /path/to/video.mp4 /path/to/outdir --sr 48000 --bit-depth 16 --overwrite
+  python split_audio_streams.py /path/to/video.mp4 [optional:/path/to/outdir] --sr 48000 --bit-depth 16 --overwrite
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ def _safe_slug(value: Optional[str]) -> str:
     """Make a filesystem-safe slug from tags like language/title."""
     if not value:
         return ""
-    # collapse non-word characters to hyphens
     value = value.strip().lower()
     slug = re.sub(r"[^\w\-]+", "-", value)
     slug = re.sub(r"-{2,}", "-", slug).strip("-")
@@ -67,51 +66,27 @@ def _probe_audio_streams(input_path: Path) -> list[dict]:
 
 def _build_wav_name(base: str, stream_idx: int, lang: Optional[str], title: Optional[str]) -> str:
     parts = [f"{base}", f"a{stream_idx}"]
-    if lang_s := _safe_slug(lang):
+    if (lang_s := _safe_slug(lang)):
         parts.append(lang_s)
-    if title_s := _safe_slug(title):
+    if (title_s := _safe_slug(title)):
         parts.append(title_s)
     return "_".join(parts) + ".wav"
 
 
 def split_audio_streams_to_wav(
     input_path: str | os.PathLike,
-    output_dir: str | os.PathLike,
+    output_dir: str | os.PathLike | None = None,     # <-- now optional
     sample_rate: int = 48000,
     bit_depth: int = 16,
     overwrite: bool = True,
 ) -> List[str]:
     """
-    Extract each audio stream in `input_path` to a separate WAV in `output_dir`.
+    Extract each audio stream in `input_path` to a separate WAV.
 
-    Parameters
-    ----------
-    input_path : str | Path
-        Video file path (any container; must be readable by ffmpeg).
-    output_dir : str | Path
-        Directory to write WAVs (created if missing).
-    sample_rate : int
-        Target WAV sample rate (e.g., 16000, 44100, 48000).
-    bit_depth : int
-        WAV PCM bit depth: 16 or 24 or 32. (Uses signed PCM LE.)
-    overwrite : bool
-        If True, overwrite existing files; otherwise fail if a target exists.
+    If `output_dir` is not provided, WAVs are written to:
+        <cwd>/audio/<input_stem>/
 
-    Returns
-    -------
-    List[str]
-        Paths to the created WAV files.
-
-    Raises
-    ------
-    FFmpegNotFoundError
-        If ffmpeg/ffprobe are not available on PATH.
-    FileNotFoundError
-        If input_path does not exist.
-    ValueError
-        If no audio streams are found.
-    RuntimeError
-        If ffmpeg/ffprobe invocations fail.
+    Returns a list of created file paths.
     """
     _check_binaries()
 
@@ -119,16 +94,19 @@ def split_audio_streams_to_wav(
     if not in_path.exists():
         raise FileNotFoundError(f"Input file not found: {in_path}")
 
-    out_dir = Path(output_dir)
+    # Default predictable location when none is provided
+    if output_dir is None:
+        out_dir = Path.cwd() / "audio"
+    else:
+        out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Extracting audio streams from {input_path} to {out_dir} at {sample_rate} Hz, bit depth: {bit_depth}")
+    print(f"Extracting audio streams from {in_path} to {out_dir} at {sample_rate} Hz, bit depth: {bit_depth}")
 
     streams = _probe_audio_streams(in_path)
     if not streams:
         raise ValueError("No audio streams found in input.")
 
-    # Choose PCM format based on bit depth
     pcm_fmt_map = {16: "pcm_s16le", 24: "pcm_s24le", 32: "pcm_s32le"}
     if bit_depth not in pcm_fmt_map:
         raise ValueError("bit_depth must be one of {16, 24, 32}.")
@@ -149,7 +127,6 @@ def split_audio_streams_to_wav(
               f"language: {lang}\n"
               f"title: {title}\n")
 
-
         out_name = _build_wav_name(base, idx, lang, title)
         out_path = out_dir / out_name
 
@@ -159,7 +136,7 @@ def split_audio_streams_to_wav(
             "-loglevel", "error",
             "-y" if overwrite else "-n",
             "-i", str(in_path),
-            "-map", f"0:a:{streams.index(s)}",  # map the Nth audio stream
+            "-map", f"0:a:{streams.index(s)}",  # Nth audio stream
             "-acodec", pcm_codec,
             "-ar", str(sample_rate),
             str(out_path),
@@ -167,7 +144,6 @@ def split_audio_streams_to_wav(
 
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            # If not overwriting and file exists, ffmpeg returns non-zero; provide clearer message.
             if not overwrite and out_path.exists():
                 raise FileExistsError(f"Target exists (use overwrite=True): {out_path}")
             raise RuntimeError(f"ffmpeg failed for stream {idx}: {result.stderr.strip()}")
@@ -183,7 +159,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Split all audio streams from a video to individual WAV files.")
     parser.add_argument("input", help="Path to input video file")
-    parser.add_argument("output_dir", help="Directory to write WAV files")
+    # Make output dir optional; default to <cwd>/audio/<input_stem>/
+    parser.add_argument("output_dir", nargs="?", default=None, help="Directory for WAVs (default: ./audio/<stem>/)")
     parser.add_argument("--sr", type=int, default=48000, help="Output sample rate (default: 48000)")
     parser.add_argument("--bit-depth", type=int, default=16, choices=[16, 24, 32], help="PCM bit depth (default: 16)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
@@ -191,7 +168,7 @@ if __name__ == "__main__":
 
     paths = split_audio_streams_to_wav(
         args.input,
-        args.output_dir,
+        args.output_dir,     # may be None → uses default path
         sample_rate=args.sr,
         bit_depth=args.bit_depth,
         overwrite=args.overwrite,

@@ -45,9 +45,17 @@ def extract_whisper_embeddings(
 
     Returns:
       <output_dir>/<source_stem>_embeddings.csv
+      (defaults to ./features/whisper-embeddings if output_dir is not provided)
     """
+    
     source_wav = Path(source_wav).resolve()
-    out_dir_final = Path(output_dir).resolve() if output_dir else source_wav.parent
+    # default to ./features/whisper-embeddings when not provided
+    out_dir_final = (
+        Path(output_dir).resolve()
+        if output_dir
+        else (Path.cwd() / "features" / "whisper-embeddings")
+    )
+
     out_dir_final.mkdir(parents=True, exist_ok=True)
     output_csv = out_dir_final / f"{source_wav.stem}_embeddings.csv"
 
@@ -175,7 +183,9 @@ def _build_arg_parser():
     p.add_argument("--aggregate", default="none", choices=("none", "mean"))
 
     # outputs
-    p.add_argument("--output_dir", default=None, help="Output directory for the CSV")
+    p.add_argument("--output_dir", default=None, 
+                   help="Output directory for the CSV (default: ./features/whisper-embeddings)",
+    )
 
     # model/runtime
     p.add_argument("--model_name", default="base")

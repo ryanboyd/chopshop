@@ -15,17 +15,14 @@ def _sanitize_speaker(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "_", name)
 
 
-
-
-
 def _clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(v, hi))
 
 
 def make_speaker_wavs_from_csv(
     source_wav: Union[str, Path],
-    csv_path: Union[str, Path],
-    out_dir: Union[str, Path],
+    transcript_csv_path: Union[str, Path],
+    output_dir: Union[str, Path, None] = None,   # <- renamed + optional
     *,
     start_col: str = "start_time",
     end_col: str = "end_time",
@@ -42,8 +39,10 @@ def make_speaker_wavs_from_csv(
     Build one WAV per speaker by concatenating only that speaker's segments.
     Inserts silence before and after each segment (pre + clip + post).
 
-    Output filenames are of the form: <input_stem>_<Speaker Name>.wav
-    Returns: { friendly_speaker_label -> output_path }
+    Output filenames are <source_stem>_<Friendly Speaker>.wav
+
+    If `output_dir` is not provided, files are written to:
+        <cwd>/audio_split/<source_stem>/
     """
     if time_unit not in ("ms", "s"):
         raise ValueError("time_unit must be 'ms' or 's'")
@@ -51,18 +50,17 @@ def make_speaker_wavs_from_csv(
     # --- small helper for filename-friendly labels (keeps spaces) ---
     def _friendly_filename_label(name: str) -> str:
         s = (name or "").strip()
-        # forbid path separators
-        s = s.replace("/", "_").replace("\\", "_")
-        # remove characters often problematic on Windows / shells
-        s = re.sub(r'[<>:"|?*]', "", s)
-        # collapse repeated whitespace
-        s = re.sub(r"\s+", " ", s)
+        s = s.replace("/", "_").replace("\\", "_")     # forbid path separators
+        s = re.sub(r'[<>:"|?*]', "", s)               # trim problematic chars
+        s = re.sub(r"\s+", " ", s)                    # collapse whitespace
         return s or "SPEAKER_0"
 
     # Resolve paths
     source_wav = Path(source_wav)
-    csv_path = Path(csv_path)
-    out_dir = Path(out_dir)
+    transcript_csv_path = Path(transcript_csv_path)
+
+    # Default predictable location if none provided
+    out_dir = Path(output_dir) if output_dir is not None else (Path.cwd() / "audio_split" / source_wav.stem)
     out_dir.mkdir(parents=True, exist_ok=True)
     base_stem = source_wav.stem
 
@@ -78,7 +76,7 @@ def make_speaker_wavs_from_csv(
     audio_len_ms = len(audio)
 
     # Read CSV
-    with csv_path.open(newline="", encoding="utf-8") as f:
+    with transcript_csv_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     # Collect segments by (sanitized) speaker key and remember friendly label
@@ -122,7 +120,7 @@ def make_speaker_wavs_from_csv(
         pre_sil  = pre_sil.set_channels(1)
         post_sil = post_sil.set_channels(1)
 
-    # Build one file per speaker; name = <input_stem>_<Friendly Label>.wav
+    # Build one file per speaker; name = <source_stem>_<Friendly Label>.wav
     results: Dict[str, Path] = {}
     for spk_key, segs in segs_by_spk.items():
         out = AudioSegment.silent(duration=0, frame_rate=audio.frame_rate)
@@ -146,14 +144,15 @@ def make_speaker_wavs_from_csv(
     return results
 
 
-
 # Optional CLI for ad-hoc use
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Create per-speaker WAVs from a timestamped CSV transcript.")
     p.add_argument("--wav", required=True, help="Source audio (wav)")
-    p.add_argument("--csv", required=True, help="Transcript CSV (start_time,end_time,speaker,text)")
-    p.add_argument("--out", required=True, help="Output dir for per-speaker wavs")
+    p.add_argument("--transcript_csv", required=True, help="Transcript CSV (start_time,end_time,speaker,text)")
+    # optional output dir; default to ./audio_split/<source_stem>/
+    p.add_argument("--output_dir", required=False, default=None,
+                   help="Output dir for per-speaker wavs (default: ./audio_split/<source_stem>/)")
     p.add_argument("--unit", choices=["ms", "s"], default="ms", help="Timestamp unit in CSV (default: ms)")
     p.add_argument("--sr", type=int, default=16000, help="Output sample rate (Hz)")
     p.add_argument("--silence-ms", type=int, default=1000, help="Silence before/after each clip in ms")
@@ -163,8 +162,8 @@ if __name__ == "__main__":
 
     paths = make_speaker_wavs_from_csv(
         source_wav=args.wav,
-        csv_path=args.csv,
-        out_dir=args.out,
+        transcript_csv_path=args.transcript_csv,
+        output_dir=args.output_dir,   # <- new name + optional
         time_unit=args.unit,
         sr=args.sr,
         silence_ms=args.silence_ms,
