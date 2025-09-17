@@ -1,192 +1,180 @@
-# ChopShop — WIP audio/video "chop → analyze" toolkit
+# ChopShop
 
-**Status:** very early **work-in-progress**. It's sharp around the edges and brittle in spots. I'll keep iterating, but expect breaking changes.
+![ChopShop header](img/chopshop.png)
 
-ChopShop's goal is to take input media (e.g., video), split it into constituent streams (video/audio/text), and generate rich features per stream. The current focus is **audio** — others will be added at a later point as I need them.
+A toolkit for turning messy A/V and text into clean, analysis-ready artifacts and features. Think of it as a small pit crew for your data: split → diarize → transcribe → gather text → extract features (dictionaries, archetypes, whisper embeddings) — with predictable filenames and folders.
+And, also, everything in-between.
 
-Current processes include:
-* Extract each audio stream from a video container to WAV
-* Diarize + transcribe multi-speaker audio (wrapping Mahmoud Ashraf's excellent `whisper-diarization`)
-* Export a timestamped transcript in multiple formats (CSV/SRT/TXT)
-* Build **per-speaker** WAVs from the transcript
-* Export **Whisper encoder embeddings** per transcript segment (CTranslate2 / faster-whisper)
+**Status:** early WIP. It works, but expect rough edges and occasional breaking changes.&#x20;
 
 ---
 
-## Prerequisites
+## What it does (high level)
 
-I'll admit, I'm not a guru here. The below items should be taken as "well, it works on my machine..." advice. Key specs that may or may not be important to match include:
+* **Audio from video** — pull each audio stream from a container into WAV.
+* **Diarize + transcribe** — wrapper around Mahmoud Ashraf's `whisper-diarization` (CSV/SRT/TXT outputs).
+* **Per-speaker WAVs** — cut a source WAV into one file per speaker using the transcript.
+* **Whisper encoder embeddings** — segment-level embeddings (and general audio modes) via Faster-Whisper (CTranslate2).
+* **Text gatherer** — stream/scale a CSV or folder of `.txt` into a single “analysis-ready” CSV (optionally grouped).
+* **Feature extraction**
 
-* **OS:** Linux (tested on Ubuntu 22.04)
-* **Python:** 3.10
-* **GPU stack:** **CUDA 12.4** + **cuDNN 9**
-* **FFmpeg binary:** must be available on your `PATH`
-
-  * Ubuntu: `sudo apt-get install ffmpeg`
-  * macOS: `brew install ffmpeg`
-  * Windows: install FFmpeg and add it to PATH
-
-> I **strongly recommend** using a fresh virtual environment (e.g., `python -m venv venv && source venv/bin/activate`) for everything below.
-
-To verify your CUDA runtime: `nvidia-smi` should show the driver and CUDA version. I'm only testing against **CUDA 12.4** right now. It is unlikely that I will target any other CUDA versions in the foreseeable future. In theory, this will only impact which version of the dependencies you install, but your mileage may vary.
+  * **Dictionary / ContentCoder** across any number of dictionaries → one wide CSV with stable column order.
+  * **Archetypes** using `archetypes` (sentence-transformer) → one CSV mirroring your analysis-ready file name.
+* **Predictable outputs** — if you don't provide an output path, ChopShop writes to `./features/<kind>/<filename>.csv`, where `<filename>` comes from your analysis-ready CSV (so grouping/concat choices are visible in the name).
 
 ---
 
-## Install
+## The API you'll use
 
-As a note, I'm putting in some effort to get all of this packaged up nicely as a `pip` installable library. At the moment, you can try this:
+ChopShop exposes namespaced sub-APIs for clarity:
 
-`pip install "chopshop[diarization,cuda]"`
+```python
+from chopshop import ChopShop
+cs = ChopShop()
 
-...followed by the three following `pip` installs:
+# Audio
+wav_paths = cs.audio.extract_wavs_from_video(input_path="input.mp4", output_dir="audio_out/")
+tp = cs.diarizer.with_thirdparty(audio_path=wav_paths[0], out_dir="transcripts/", whisper_model="small", device="cuda")
+cs.audio.split_wav_by_speaker(source_wav=wav_paths[0], transcript_csv=tp["csv"], out_dir="per_speaker/")
 
+# Embeddings (transcript-driven OR general-audio)
+cs.audio.export_whisper_embeddings(source_wav=wav_paths[0], transcript_csv=tp["csv"])          # segment CSV
+cs.audio.export_whisper_embeddings(source_wav=wav_paths[0], strategy="nonsilent", aggregate="mean")  # general audio
+
+# Text gather → Dictionaries
+feat_csv = cs.text.analyze_with_dictionaries(
+    csv_path="transcripts/session.csv",
+    dict_paths=["dictionaries/LIWC-22.dicx", "dictionaries/empath-default.dicx"],
+    text_cols=["text"], id_cols=["speaker"], group_by=["speaker"], delimiter=",",
+)
+
+# Text gather → Archetypes
+arch_csv = cs.text.analyze_with_archetypes(
+    csv_path="transcripts/session.csv",
+    archetype_csvs=["dictionaries/archetypes/Suicidality.csv", "dictionaries/archetypes/Resilience.csv"],
+    text_cols=["text"], id_cols=["speaker"], group_by=["speaker"], delimiter=",",
+)
 ```
+
+**Default output locations**
+If you omit `out_features_csv`, ChopShop writes to:
+
+* Dictionaries → `./features/dictionary/<analysis_ready_filename>.csv`
+* Archetypes → `./features/archetypes/<analysis_ready_filename>.csv`
+* Whisper embeddings → `./features/whisper_embed/<analysis_ready_filename>.csv`
+
+The `<analysis_ready_filename>` comes from the text-gather step (e.g., `dataset_grouped_speaker.csv`), or from your provided `analysis_csv`.
+
+---
+
+## CLI (quick hits)
+
+Anything you can do in Python... well, you can also run from the terminal.
+
+```bash
+# Gather text from a CSV (auto-named output if --out omitted)
+python -m chopshop.helpers.text_gather \
+  --csv transcripts/session.csv \
+  --text-col text --group-by speaker --delimiter , --encoding utf-8-sig
+
+# Diarization (wrapper; writes CSV/SRT/TXT under out_dir/<basename>/)
+python -m chopshop.audio.diarize_with_thirdparty \
+  --audio_path audio/session_a1.wav --out_dir transcripts/ --whisper_model small --device cuda --num_speakers 2
+
+# Whisper embeddings (general audio; nonsilent with mean pool)
+python -m chopshop.audio.extract_whisper_embeddings \
+  --source_wav audio/session_a1.wav \
+  --strategy nonsilent --aggregate mean --output_dir features/whisper_embed/
+```
+
+---
+
+## Installation
+
+A fresh virtual environment is strongly recommended.
+
+```bash
+python -m venv venv-chopshop
+source venv-chopshop/bin/activate
+```
+
+### Quick path (when available)
+
+```bash
+pip install "chopshop[diarization,cuda]"
+```
+
+Then install the three git extras used by the diarization wrapper:
+
+```bash
 pip install git+https://github.com/MahmoudAshraf97/demucs.git
 pip install git+https://github.com/oliverguhr/deepmultilingualpunctuation.git
 pip install git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
 ```
 
-...and lastly, followed by this:
+Install PyTorch built for **CUDA 12.4** (the stack ChopShop targets):
 
-```
+```bash
 pip install --force-reinstall --no-cache-dir \
   torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
   --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Also, again, be sure that you have ffpmeg installed if not already:
-`sudo apt-get update && sudo apt-get install -y ffmpeg`
+And ensure **FFmpeg** is on your `PATH` (Ubuntu: `sudo apt-get install ffmpeg`, macOS: `brew install ffmpeg`).
 
-### Manual Installation of Dependencies
-
-If you want to skip the potentially problematic .whl file dependencies, you can install manually. Note that it is *highly* likely that the order matters to avoid dependency pinning conflicts.
+### Manual stack (same versions, explicit)
 
 ```bash
-# (Recommended) fresh virtualenv
-python -m venv venv-chopshop
-source venv-chopshop/bin/activate
-
-# 1) Core ASR/diarization deps
+# Core pieces
 pip install "faster-whisper>=1.1.0"
 pip install "nemo-toolkit[asr]>=2.dev"
 pip install git+https://github.com/MahmoudAshraf97/demucs.git
 pip install git+https://github.com/oliverguhr/deepmultilingualpunctuation.git
 pip install git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
 
-# 2) cuDNN user-space libs for CUDA 12
+# cuDNN user-space libs (CUDA 12)
 pip install -U nvidia-cudnn-cu12
 
-# (Optional) some systems also install the OS package:
-# sudo apt-get -y install cudnn9-cuda-12
-
-# 3) PyTorch built for CUDA 12.4 (exact versions I tested)
+# PyTorch for CUDA 12.4
 pip install --force-reinstall --no-cache-dir \
   torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
   --index-url https://download.pytorch.org/whl/cu124
 
-# 4) Other dependencies...
-pip install contentcoder
-
+# Text features
+pip install contentcoder archetyper
 ```
 
-If you hit cuDNN errors, it usually means the CUDA/cuDNN runtime and the PyTorch wheels don't match. Keep them consistent (CUDA **12.4** with the `cu124` wheel index, and cuDNN 9 from either the `nvidia-cudnn-cu12` wheel or your OS package).
+> If you hit CUDA/cuDNN loader errors, it usually means the runtime and wheel builds don't match. Keep CUDA **12.4**, `cu124` wheels, and cuDNN 9 aligned.
 
 ---
 
-## Quick usage example
 
-> The filenames are intentionally generic. Adjust as needed.
 
-```python
-from pathlib import Path
-from chopshop.ChopShop import ChopShop
+## Troubleshooting quickies
 
-cs = ChopShop()
+* **Delimiter or encoding issues** when gathering text
+  Pass `--delimiter` and `--encoding` parameters explicitly for CSV inputs, just to be safe. If you run into any errors, try using `--delimiter ,` and `--encoding utf-8-sig` as a starting point.
 
-# 1) Split audio streams from a video/container
-wav_list = cs.split_audio_streams(
-    "sample_video.mp4",
-    output_dir="audio/",
-    sample_rate=48000,
-    bit_depth=16,
-    overwrite=True,
-)
-diar_input_audio = str(wav_list[0])  # pick a stream
+* **Diarizer ignores `--num_speakers`**
+  Use the custom entrypoint (enabled by default) which wires `num_speakers` through properly... for now. If needed, pin `min_num_speakers == max_num_speakers == N`.
 
-# 2) Diarize + transcribe (wrapper around whisper-diarization)
-tp = cs.diarize_with_thirdparty(
-    input_audio=diar_input_audio,
-    out_dir="transcripts/",
-    repo_dir="path/to/whisper-diarization",  # if you have a local clone; otherwise leave default
-    whisper_model="base",   # use whatever one you like; just be consistent
-    language="en",
-    device="cuda",
-    batch_size=0,
-    no_stem=False,
-    suppress_numerals=False,
-    parallel=False,
-    use_custom=True,   # use my custom entry point that also writes a CSV
-    keep_temp=False,   # if set to False, it will clean up after itself (good idea)
-    num_speakers=2,    # optional hint; can be omitted to let diarization infer
-)
+* **cuDNN / CUDA symbol errors**
+  Mismatched CUDA/cuDNN vs wheel builds. Reinstall the `cu124` PyTorch wheels and `nvidia-cudnn-cu12`.
 
-# 3) Make per-speaker WAVs using the transcript CSV
-cs.split_wav_by_speaker(
-    source_wav=diar_input_audio,
-    transcript_csv=tp.raw_files["csv"],
-    out_dir="audio_split/",
-    time_unit="ms",    # the transcript CSV uses milliseconds
-    silence_ms=500,   # add 0.5s before/after each clip (1s between clips)
-)
-
-# 4) Export Whisper encoder embeddings per transcript segment
-cs.export_embeddings(
-    transcript_csv=tp.raw_files["csv"],
-    source_wav=diar_input_audio,
-    output_dir="whisper_embed/",
-    model_name="base",
-    device="cuda",
-    compute_type="float16",  # good default on GPU
-    time_unit="ms",
-    run_in_subprocess=True,  # isolates the encoder to avoid cuDNN conflicts
-)
-```
-
-**Outputs (typical):**
-
-* `transcripts/…` — CSV (timestamped), SRT, and TXT
-* `audio_split/…` — one WAV per detected speaker
-* `whisper_embed/<source_stem>_embeddings.csv` — one row per transcript span with `e0..eN` encoder features
+* **Embeddings subprocess fails**
+  Use `device=cpu` to rule out GPU issues; or set `CHOPSHOP_DEBUG=1` to surface more logs.
 
 ---
 
-## Troubleshooting
+## Credits
 
-* **`Unable to load any of {libcudnn_ops.so…}`**
-  The process can't find cuDNN shared libs. Ensure `nvidia-cudnn-cu12` is installed and that your `LD_LIBRARY_PATH` includes its `lib` directory.
-
-* **`CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`**
-  Version mismatch between runtime cuDNN and the PyTorch wheels. Reinstall the PyTorch wheels for **your** CUDA minor version (e.g., `cu124`) and keep cuDNN aligned.
-
-* **Diarization is slow / OOM**
-
-  * Keep `batch_size=0` (pipeline default)
-  * Skip source separation with `no_stem=True`
-  * Provide `num_speakers` if you know it (e.g., `2`)
-
-* **Embeddings CSV is empty**
-
-  * Make sure you pass the correct `time_unit` for your transcript (I use `ms` which should be the default)
-  * Enable extractor debug logs by setting `CHOPSHOP_DEBUG=1` in your environment to see row counts and shapes
+* Diarization stack adapted from **Mahmoud Ashraf's** excellent [`whisper-diarization`](https://github.com/MahmoudAshraf97/whisper-diarization).
+* Dictionaries via **ContentCoder-Py**; archetypes via **archetypes** (sentence-transformers). Well, okay, I wrote those. But I didn't know at the time that they'd be so handy. So... good job, former me.
 
 ---
 
-## Acknowledgments
+## License & status
 
-Huge thanks to **Mahmoud Ashraf** for the outstanding [`whisper-diarization`](https://github.com/MahmoudAshraf97/whisper-diarization) project, which I modify and wrap for diarization.
+MIT (see LICENSE). Active WIP; APIs and default paths may (read: will) shift as the project settles — release notes will most likely call out breaking changes.
 
----
-
-## Roadmap
-
-TBD. One of the big ones is to unify everything with defaults into a single function for the `ChopShop()` class.
+*Happy chopping.*
