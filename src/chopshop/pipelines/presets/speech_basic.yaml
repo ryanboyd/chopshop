@@ -1,0 +1,31 @@
+# chopshop/pipeline/presets/speech_chain.yaml
+- call: chopshop.audio.convert_to_wav.convert_audio_to_wav
+  with:
+    input_path: "{{input}}"
+    sample_rate: 16000
+    channels: 1
+  save_as: wav
+
+- call: chopshop.audio.diarizer.whisper_diar_wrapper.run_whisper_diarization_repo
+  with:
+    audio_path: "{{wav}}"
+    out_dir: "{{cwd}}/transcripts"
+    whisper_model: small
+    device: cuda
+  save_as: diar_out
+
+- call: chopshop.text.analyze_with_dictionaries.analyze_with_dictionaries
+  with:
+    analysis_csv: "{{pick:diar_out.raw_files.csv}}"
+    dict_paths:
+      - dictionaries/liwc/LIWC-22 Dictionary (2022-01-27).dicx
+  save_as: dict_csv
+
+- call: chopshop.audio.extract_whisper_embeddings.extract_whisper_embeddings
+  with:
+    source_wav: "{{wav}}"
+    transcript_csv: "{{pick:diar_out.raw_files.csv}}"
+    output_dir: "{{cwd}}/features/whisper-embeddings"
+    model_name: base
+    device: cuda
+  save_as: whisper_csv

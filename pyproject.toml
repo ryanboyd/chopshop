@@ -64,6 +64,7 @@ packages = { find = { where = ["src"], include = ["chopshop*"] } }
 [tool.setuptools.package-data]
 # Because I vendored the diarizer repo under chopshop/audio/diarizer/whisper-diarization/
 "chopshop.diarizer" = ["whisper-diarization/**"]
+"chopshop.pipeline.presets" = ["*.yaml"]
 
 [project.scripts]
 # Entry points must target a callable, not __main__
