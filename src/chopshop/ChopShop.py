@@ -27,6 +27,7 @@ class ChopShop:
     # back-compat pass-throughs
     
     # audio
+    def convert_to_wav(self, **kwargs):                         return self.audio.convert_to_wav(**kwargs)
     def extract_wavs_from_video(self, **kwargs):                return self.audio.extract_wavs_from_video(**kwargs)
     def split_wav_by_speaker(self, **kwargs):                   return self.audio.split_wav_by_speaker(**kwargs)
     def extract_whisper_embeddings(self, **kwargs):             return self.audio.extract_whisper_embeddings(**kwargs)
@@ -40,6 +41,7 @@ class ChopShop:
     # helpers
     def txt_folder_to_analysis_ready_csv(self, **kwargs):       return self.helpers.txt_folder_to_analysis_ready_csv(**kwargs)
     def csv_to_analysis_ready_csv(self, **kwargs):              return self.helpers.csv_to_analysis_ready_csv(**kwargs)
+    def find_files(self, **kwargs):                             return self.helpers.find_files(**kwargs)
     
 
     def txt_folder_to_analysis_ready_csv(self, **kwargs):
@@ -50,8 +52,13 @@ class ChopShop:
         from .helpers.text_gather import csv_to_analysis_ready_csv
         return _forward(csv_to_analysis_ready_csv, kwargs)
 
+
 class _AudioAPI:
     def __init__(self, parent: ChopShop): self._cs = parent
+
+    def convert_to_wav(self, **kwargs):
+        from .audio.convert_to_wav import convert_audio_to_wav
+        return _forward(convert_audio_to_wav, kwargs)
 
     def extract_wavs_from_video(self, **kwargs):
         from .audio.extract_wav_from_video import split_audio_streams_to_wav
@@ -71,7 +78,6 @@ class _AudioAPI:
 
 
 class _TextAPI:
-
     def __init__(self, parent: ChopShop): self._cs = parent
 
     def analyze_with_dictionaries(self, **kwargs):
@@ -89,7 +95,6 @@ class _TextAPI:
 
 class _HelpersAPI:
     def __init__(self, parent: ChopShop): self._cs = parent
-
     
     def txt_folder_to_analysis_ready_csv(self, **kwargs):
         from .helpers.text_gather import txt_folder_to_analysis_ready_csv
@@ -98,4 +103,8 @@ class _HelpersAPI:
     def csv_to_analysis_ready_csv(self, **kwargs):
         from .helpers.text_gather import csv_to_analysis_ready_csv
         return _forward(csv_to_analysis_ready_csv, kwargs)
+    
+    def find_files(self, **kwargs):
+        from .helpers.find_files import find_files
+        return _forward(find_files, kwargs)
     

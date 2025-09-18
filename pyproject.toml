@@ -21,6 +21,8 @@ dependencies = [
   "pydub>=0.25.1",
   "contentcoder",
   "archetyper",
+  "nltk",
+  "sentence-transformers",
   # NOTE TO SELF:
   # Do NOT list torch/torchaudio here;
   # users must install the right CUDA wheel themselves

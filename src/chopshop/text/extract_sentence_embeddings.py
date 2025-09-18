@@ -5,6 +5,7 @@ import csv
 import re
 import sys
 import numpy as np
+import nltk
 
 # Allow very large CSV fields (handles huge text safely).
 try:
@@ -24,6 +25,41 @@ from ..helpers.text_gather import (
 )
 
 PathLike = Union[str, Path]
+
+
+def _ensure_nltk_punkt(verbose: bool = True) -> bool:
+    """
+    Ensure NLTK sentence tokenizer data is available.
+    Tries 'punkt' first; falls back to 'punkt_tab' (used in newer NLTK builds).
+    Returns True if sent_tokenize is usable; False otherwise.
+    """
+    try:
+        nltk.data.find("tokenizers/punkt")
+        ok = True
+    except LookupError:
+        if verbose:
+            print("Downloading NLTK 'punkt' tokenizer ...")
+        try:
+            nltk.download("punkt", quiet=True)
+            nltk.data.find("tokenizers/punkt")
+            ok = True
+        except LookupError:
+            # Some setups expose data under 'punkt_tab'
+            try:
+                if verbose:
+                    print("Trying NLTK 'punkt_tab' ...")
+                nltk.download("punkt_tab", quiet=True)
+                nltk.data.find("tokenizers/punkt_tab")
+                ok = True
+            except LookupError:
+                ok = False
+
+    if verbose:
+        if ok:
+            print("Sentence tokenizer available: using NLTK sent_tokenize.")
+        else:
+            print("Sentence tokenizer NOT available: using regex fallback.")
+    return ok
 
 def _split_sentences(text: str) -> list[str]:
     """Prefer NLTK sent_tokenize if available; fallback to a simple regex."""
@@ -80,7 +116,7 @@ def analyze_with_sentence_embeddings(
     # ====== SentenceTransformer options ======
     model_name: str = "sentence-transformers/all-roberta-large-v1",
     batch_size: int = 32,
-    normalize_l2: bool = False,       # set True if you want unit-length vectors
+    normalize_l2: bool = True,       # set True if you want unit-length vectors
     rounding: Optional[int] = None,   # None = full precision; e.g., 6 for ~float32-ish text
     show_progress: bool = False,
 ) -> Path:
@@ -92,6 +128,9 @@ def analyze_with_sentence_embeddings(
     If out_features_csv is not provided, defaults to:
         ./features/sentence-embeddings/<analysis_ready_filename>
     """
+    # pre-check that nltk sent_tokenizer is usable
+    use_nltk = _ensure_nltk_punkt(verbose=True)
+
     # 1) analysis-ready CSV
     if analysis_csv is not None:
         analysis_ready = Path(analysis_csv)
@@ -159,7 +198,7 @@ def analyze_with_sentence_embeddings(
         for text_id, text in _iter_items_from_csv(analysis_ready, encoding=encoding, delimiter=delimiter):
             sents = _split_sentences(text)
             if not sents:
-                vec = np.zeros((dim,), dtype=np.float32)
+                vec = None
             else:
                 emb = model.encode(
                     sents,
@@ -170,13 +209,22 @@ def analyze_with_sentence_embeddings(
                 )
                 # Average across sentences → one vector
                 vec = emb.mean(axis=0).astype(np.float32, copy=False)
-            vec = _norm(vec)
-
-            if rounding is not None:
-                row = [text_id] + [round(float(x), int(rounding)) for x in vec.tolist()]
+            
+            
+            # L2 and rounding only if we have a vector
+            if vec is None:
+                values = [""] * dim  # <- write empty cells, not zeros/NaNs
             else:
-                row = [text_id] + [float(x) for x in vec.tolist()]
-            writer.writerow(row)
+                if normalize_l2:
+                    n = float(np.linalg.norm(vec))
+                    if n > 1e-12:
+                        vec = vec / n
+                if rounding is not None:
+                    values = [round(float(x), int(rounding)) for x in vec.tolist()]
+                else:
+                    values = [float(x) for x in vec.tolist()]
+
+            writer.writerow([text_id] + values)
 
     return out_features_csv
 
@@ -226,7 +274,7 @@ def _build_arg_parser():
     # Model options
     p.add_argument("--model-name", default="sentence-transformers/all-roberta-large-v1")
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--normalize-l2", action="store_true", default=False,
+    p.add_argument("--normalize-l2", action="store_true", default=True,
                    help="L2-normalize the final vector per row")
     p.add_argument("--rounding", type=int, default=None,
                    help="Round floats to N decimals (omit for full precision)")
