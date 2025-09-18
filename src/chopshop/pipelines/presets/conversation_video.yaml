@@ -1,0 +1,170 @@
+# conversation_video.yaml
+#
+# End-to-end pipeline for conversational videos:
+# 1) video → wav
+# 2) diarize (transcript CSV)
+# 3) split per-speaker wavs
+# 4) whisper embeddings (segment-level, from transcript)
+# 5) dictionary content coding
+# 6) archetype analysis
+# 7) sentence embeddings (row-level)
+#
+# You can override any var via:
+#   --var overwrite_existing=true
+#   --var whisper_model=small
+#   --var device=cpu
+#   --vars-file my_overrides.yaml
+#
+# Inputs are discovered by:  python -m chopshop.pipeline.run_pipeline --root <folder> --kind video --preset conversation_video
+
+vars:
+  # General toggles
+  overwrite_existing: false      # flip to true to rerun and overwrite outputs
+  #device: auto                   # auto | cuda | cpu
+  whisper_model: base            # e.g., tiny/base/small/medium/large-v3
+  language: en
+
+  # For transcription/diarization. Can leave it as null and let the system
+  # try to decide, or manually specify
+  num_speakers: null
+
+  # Text-gather settings (for dict/archetypes/sentence-embeddings)
+  text_cols: ["text"]
+  id_cols: ["speaker"]
+  group_by: ["speaker"]
+  delimiter: ","
+
+  # Dictionary + Archetypes you want to run
+  dict_paths:
+    - dictionaries/liwc/agitationdejection-dictionary.dicx
+    - dictionaries/liwc/empath-default-dictionary.dicx
+    - dictionaries/liwc/LIWC-22 Dictionary (2022-01-27).dicx
+
+  archetype_csvs:
+    - dictionaries/archetypes/Suicidality.csv
+    - dictionaries/archetypes/Resilience.csv
+
+  # Models used by archetypes + sentence embeddings
+  nlp_model: sentence-transformers/all-roberta-large-v1
+
+steps:
+  # ------------------------------------------------------------
+  # 1) Extract WAV from video
+  # ------------------------------------------------------------
+  - call: cs.audio.convert_to_wav
+    with:
+      input_path: "{{input}}"
+      sample_rate: 16000
+      channels: 1
+      overwrite_existing: "{{var:overwrite_existing}}"
+    save_as: wav
+    require: [input_path]
+
+  # ------------------------------------------------------------
+  # 2) Diarize (writes CSV/SRT/TXT into out_dir/<stem>/)
+  # ------------------------------------------------------------
+  - call: cs.audio.diarize_with_thirdparty
+    with:
+      audio_path: "{{wav}}"
+      whisper_model: "{{var:whisper_model}}"
+      language: "{{var:language}}"
+      device: "{{var:device}}"
+      batch_size: 0
+      use_custom: true
+      keep_temp: false
+      num_speakers: "{{var:num_speakers}}"
+    save_as: diar
+    require: [audio_path]
+
+  # ------------------------------------------------------------
+  # 3) Split per-speaker WAVs using the diarization CSV
+  #    NOTE: output_dir omitted → your function's default will be used.
+  # ------------------------------------------------------------
+  - call: cs.audio.split_wav_by_speaker
+    with:
+      source_wav: "{{wav}}"
+      csv_path: "{{pick:diar.raw_files.csv}}"
+      time_unit: "ms"            # diar CSVs use ms by default
+      silence_ms: 0              # no padding between clips
+      sr: 16000
+      mono: true
+    save_as: speaker_wavs
+    require: [source_wav, csv_path]
+
+  # ------------------------------------------------------------
+  # 4) Whisper embeddings for the transcript segments
+  #    (wrapper chooses ./features/whisper-embeddings by default if not set)
+  # ------------------------------------------------------------
+  - call: cs.audio.extract_whisper_embeddings
+    with:
+      source_wav: "{{wav}}"
+      transcript_csv: "{{pick:diar.raw_files.csv}}"
+      model_name: "{{var:whisper_model}}"
+      device: "{{var:device}}"
+      time_unit: "ms"
+      compute_type: "float16"
+      run_in_subprocess: true
+    save_as: whisper_embed_csv
+    require: [source_wav, transcript_csv]
+
+  # ------------------------------------------------------------
+  # 5) Dictionary content coding
+  #    We feed the diar CSV directly as analysis source and group by speaker.
+  #    If out_features_csv omitted → defaults to ./features/dictionary/<filename>
+  # ------------------------------------------------------------
+  - call: cs.text.analyze_with_dictionaries
+    with:
+      analysis_csv: "{{pick:diar.raw_files.csv}}"
+      dict_paths: "{{var:dict_paths}}"
+      encoding: "utf-8-sig"
+      delimiter: "{{var:delimiter}}"
+      text_cols: "{{var:text_cols}}"
+      id_cols: "{{var:id_cols}}"
+      group_by: "{{var:group_by}}"
+      relative_freq: true
+      drop_punct: true
+      rounding: 4
+      retain_captures: false
+      wildcard_mem: true
+      overwrite_existing: "{{var:overwrite_existing}}"
+    save_as: dict_features_csv
+    require: [analysis_csv, dict_paths]
+
+  # ------------------------------------------------------------
+  # 6) Archetypes analysis
+  #    If out_features_csv omitted → defaults to ./features/archetypes/<filename>
+  # ------------------------------------------------------------
+  - call: cs.text.analyze_with_archetypes
+    with:
+      analysis_csv: "{{pick:diar.raw_files.csv}}"
+      archetype_csvs: "{{var:archetype_csvs}}"
+      encoding: "utf-8-sig"
+      delimiter: "{{var:delimiter}}"
+      text_cols: "{{var:text_cols}}"
+      id_cols: "{{var:id_cols}}"
+      group_by: "{{var:group_by}}"
+      model_name: "{{var:nlp_model}}"
+      mean_center_vectors: true
+      fisher_z_transform: false
+      rounding: 4
+      overwrite_existing: "{{var:overwrite_existing}}"
+    save_as: archetypes_csv
+    require: [analysis_csv, archetype_csvs]
+
+  # ------------------------------------------------------------
+  # 7) Sentence embeddings (average per row)
+  #    Defaults to ./features/sentence-embeddings/<filename> if unset.
+  # ------------------------------------------------------------
+  - call: cs.text.extract_sentence_embeddings
+    with:
+      analysis_csv: "{{pick:diar.raw_files.csv}}"
+      delimiter: "{{var:delimiter}}"
+      text_cols: "{{var:text_cols}}"
+      id_cols: "{{var:id_cols}}"
+      group_by: "{{var:group_by}}"
+      model_name: "{{var:nlp_model}}"
+      normalize_l2: false
+      rounding: null     # null → full precision; set int (e.g., 6) to shrink file size
+      overwrite_existing: "{{var:overwrite_existing}}"
+    save_as: sent_emb_csv
+    require: [analysis_csv]

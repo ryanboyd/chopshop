@@ -101,8 +101,9 @@ def _cleanup_temps(work_dir: Path, keep_temp: bool) -> None:
 
 def run_whisper_diarization_repo(
     audio_path: str | Path,
-    out_dir: str | Path,
+    out_dir: Optional[str] | Optional[Path] | None = None,
     *,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
     repo_dir: str | Path | None = None,      # ← now Optional
     whisper_model: str = "base.en",
     language: Optional[str] = None,
@@ -122,20 +123,27 @@ def run_whisper_diarization_repo(
     and (by default) purges temp_outputs* folders.
     """
     audio_path = Path(audio_path).resolve()
-    out_dir = Path(out_dir).resolve()
+    # default transcripts folder next to current working dir
+    out_dir = Path(out_dir).resolve() if out_dir is not None else (Path.cwd() / "transcripts")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Isolated working folder
     work_dir = out_dir / f"{audio_path.stem}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy input audio next to outputs so the CLI can use simple relative paths
     local_audio = work_dir / audio_path.name
-    if not local_audio.exists():
-        shutil.copy2(audio_path, local_audio)
-
+    
     # CSV default: <work_dir>/<stem>.csv
     csv_path = work_dir / f"{local_audio.stem}.csv"
+    if not overwrite_existing and Path(csv_path).is_file():
+        print("Diarized transcript output file already exists; returning existing file.")
+        raw = _guess_outputs_from_stem(work_dir, local_audio.stem)
+        return DiarizationOutputFiles(work_dir=work_dir, raw_files=raw, speaker_wavs={})
+
+    
+    # Copy input audio next to outputs so the CLI can use simple relative paths
+    if not local_audio.exists():
+        shutil.copy2(audio_path, local_audio)
 
     # Resolve path to vendored repo (or use user-supplied path)
     with ExitStack() as stack:
@@ -194,7 +202,11 @@ def _build_arg_parser():
     )
     # required I/O
     p.add_argument("--audio_path", required=True, help="Path to input audio (e.g., WAV)")
-    p.add_argument("--out_dir",    required=True, help="Directory to write outputs (work_dir/<stem>/...)")
+    p.add_argument("--out_dir", default=None, help="Directory to write outputs (work_dir/<stem>/...) "
+                                                   "Default: ./transcripts under current working dir")
+
+    p.add_argument("--overwrite_existing", type=bool, default=False,
+                    help="Do you want to overwrite the output file if it already exists?")
 
     # optional repo dir (omit to use vendored copy)
     p.add_argument("--repo_dir", default=None, help="Path to whisper-diarization repo; omit to use vendored")
@@ -229,6 +241,7 @@ def main():
     outs = run_whisper_diarization_repo(
         audio_path=args.audio_path,
         out_dir=args.out_dir,
+        overwrite_existing=args.overwrite_existing,
         repo_dir=args.repo_dir,
         whisper_model=args.whisper_model,
         language=args.language,

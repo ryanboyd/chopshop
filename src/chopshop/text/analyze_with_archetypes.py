@@ -17,6 +17,7 @@ def analyze_with_archetypes(
 
     # ----- Output -----
     out_features_csv: Optional[Union[str, Path]] = None,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
 
     # ----- Archetype CSVs (one or more) -----
     archetype_csvs: Sequence[Union[str, Path]],
@@ -89,6 +90,18 @@ def analyze_with_archetypes(
                 )
             )
 
+    # 1b) Decide default features path if not provided:
+    #     <analysis_ready_dir>/features/archetypes/<analysis_ready_filename>
+    if out_features_csv is None:
+        out_features_csv = Path.cwd() / "features" / "archetypes" / analysis_ready.name
+    out_features_csv = Path(out_features_csv)
+    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    if not overwrite_existing and Path(out_features_csv).is_file():
+        print("Archetypes output file already exists; returning existing file.")
+        return out_features_csv
+
+
     # 2) Validate archetype CSVs
     archetype_csvs = [Path(p) for p in archetype_csvs]
     if not archetype_csvs:
@@ -107,14 +120,6 @@ def analyze_with_archetypes(
                 )
             for row in reader:
                 yield str(row[id_col]), (row.get(text_col) or "")
-
-    
-    # 1b) Decide default features path if not provided:
-    #     <analysis_ready_dir>/features/archetypes/<analysis_ready_filename>
-    if out_features_csv is None:
-        out_features_csv = Path.cwd() / "features" / "archetypes" / analysis_ready.name
-    out_features_csv = Path(out_features_csv)
-    out_features_csv.parent.mkdir(parents=True, exist_ok=True)
 
     maa.analyze_texts_to_csv(
         items=_iter_items_from_csv(analysis_ready),
@@ -150,6 +155,8 @@ def _build_arg_parser():
     # Output
     p.add_argument("--out", dest="out_features_csv", default=None,
                    help="Output CSV (default: ./features/archetypes/<gathered_name>)")
+    p.add_argument("--overwrite_existing", type=bool, default=False,
+                    help="Do you want to overwrite the output file if it already exists?")
 
     # Archetype CSVs (repeatable)
     p.add_argument("--archetype", dest="archetype_csvs", action="append", required=True,
@@ -203,6 +210,7 @@ def main():
         txt_dir=args.txt_dir,
         analysis_csv=args.analysis_csv,
         out_features_csv=args.out_features_csv,
+        overwrite_existing=args.overwrite_existing,
         archetype_csvs=args.archetype_csvs,
         encoding=args.encoding,
         delimiter=args.delimiter,

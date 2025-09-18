@@ -20,7 +20,7 @@ def convert_audio_to_wav(
     sample_rate: int = 16000,          # common for ASR
     bit_depth: int = 16,               # 16/24/32 signed PCM
     channels: int = 1,                 # 1=mono, 2=stereo
-    overwrite: bool = False,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
 ) -> Path:
     """
     Convert any audio (or A/V container) to a PCM WAV file using ffmpeg.
@@ -48,6 +48,10 @@ def convert_audio_to_wav(
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / base
 
+    if not overwrite_existing and Path(out_path).is_file():
+        print("WAV file already exists; returning existing file.")
+        return out_path
+
     pcm_map = {16: "pcm_s16le", 24: "pcm_s24le", 32: "pcm_s32le"}
     if bit_depth not in pcm_map:
         raise ValueError("bit_depth must be one of {16, 24, 32}.")
@@ -57,7 +61,7 @@ def convert_audio_to_wav(
     cmd = [
         "ffmpeg",
         "-hide_banner", "-loglevel", "error",
-        "-y" if overwrite else "-n",
+        "-y" if overwrite_existing else "-n",
         "-i", str(in_path),
         "-vn",                        # ignore video
         "-acodec", pcm_map[bit_depth],
@@ -68,7 +72,7 @@ def convert_audio_to_wav(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        if not overwrite and out_path.exists():
+        if not overwrite_existing and out_path.exists():
             raise FileExistsError(f"Target exists (use overwrite=True): {out_path}")
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()}")
 
@@ -87,7 +91,7 @@ def _build_arg_parser():
     p.add_argument("--sr", dest="sample_rate", type=int, default=16000, help="Sample rate (Hz)")
     p.add_argument("--bit-depth", type=int, choices=[16, 24, 32], default=16, help="PCM bit depth")
     p.add_argument("--channels", type=int, choices=[1, 2], default=1, help="1=mono, 2=stereo")
-    p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
+    p.add_argument("--overwrite_existing", action="store_true", help="Overwrite existing output")
     return p
 
 def main():
@@ -99,7 +103,7 @@ def main():
         sample_rate=args.sample_rate,
         bit_depth=args.bit_depth,
         channels=args.channels,
-        overwrite=args.overwrite,
+        overwrite_existing=args.overwrite_existing,
     )
     print(str(out))
 

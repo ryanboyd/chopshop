@@ -17,6 +17,7 @@ def analyze_with_dictionaries(
 
     # ----- Output -----
     out_features_csv: Optional[Union[str, Path]] = None,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
 
     # ----- Dictionaries -----
     dict_paths: Sequence[Union[str, Path]],
@@ -99,6 +100,10 @@ def analyze_with_dictionaries(
     out_features_csv = Path(out_features_csv)
     out_features_csv.parent.mkdir(parents=True, exist_ok=True)
 
+    if not overwrite_existing and Path(out_features_csv).is_file():
+        print("Dictionary content coding output file already exists; returning existing file.")
+        return out_features_csv
+
 
     # 2) Validate dictionaries
     dict_paths = [Path(p) for p in dict_paths]
@@ -156,6 +161,8 @@ def _build_arg_parser():
     # Output
     p.add_argument("--out", dest="out_features_csv", default=None,
                    help="Output CSV (default: ./features/dictionary/<gathered_name>)")
+    p.add_argument("--overwrite_existing", type=bool, default=False,
+                   help="Do you want to overwrite the output file if it already exists?")
 
     # Dictionaries (repeatable)
     p.add_argument("--dict", dest="dict_paths", action="append", required=True,
@@ -211,6 +218,7 @@ def main():
         txt_dir=args.txt_dir,
         analysis_csv=args.analysis_csv,
         out_features_csv=args.out_features_csv,
+        overwrite_existing=args.overwrite_existing,
         dict_paths=args.dict_paths,
         encoding=args.encoding,
         text_cols=text_cols,

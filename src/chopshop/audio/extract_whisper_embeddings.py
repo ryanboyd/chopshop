@@ -22,6 +22,7 @@ def extract_whisper_embeddings(
 
     # outputs
     output_dir: Optional[Union[str, Path]] = None,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
 
     # model/runtime
     model_name: str = "base",
@@ -58,6 +59,10 @@ def extract_whisper_embeddings(
 
     out_dir_final.mkdir(parents=True, exist_ok=True)
     output_csv = out_dir_final / f"{source_wav.stem}_embeddings.csv"
+
+    if not overwrite_existing and Path(output_csv).is_file():
+        print("Whisper embedding feature output file already exists; returning existing file.")
+        return output_csv
 
     if not run_in_subprocess:
         # ---- In-process path (only when you’re sure no Torch/CUDA conflicts) ----
@@ -186,6 +191,8 @@ def _build_arg_parser():
     p.add_argument("--output_dir", default=None, 
                    help="Output directory for the CSV (default: ./features/whisper-embeddings)",
     )
+    p.add_argument("--overwrite_existing", type=bool, default=False,
+                    help="Do you want to overwrite the output file if it already exists?")
 
     # model/runtime
     p.add_argument("--model_name", default="base")
@@ -222,6 +229,7 @@ def main():
         top_db=args.top_db,
         aggregate=args.aggregate,
         output_dir=args.output_dir,
+        overwrite_existing=args.overwrite_existing,
         model_name=args.model_name,
         device=args.device,
         compute_type=args.compute_type,

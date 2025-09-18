@@ -31,9 +31,9 @@ Returns:
   A CSV manifest of inputs, success/failure, and final artifacts (JSON).
 
 Usage:
-  python -m chopshop.pipeline.run_pipeline \
-    --root /data/study \
-    --kind audio \
+  python -m chopshop.pipelines.run_pipeline \
+    --root_dir /data/study \
+    --file_type audio \
     --preset speech_chain \
     --workers 2 \
     --var delimiter="," --vars-file overrides.yaml
@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
 
-from chopshop import ChopShop
+from ..ChopShop import ChopShop
 from chopshop.helpers.find_files import find_files
 
 
@@ -63,7 +63,7 @@ from chopshop.helpers.find_files import find_files
 def list_presets() -> List[str]:
     """List built-in preset YAMLs shipped inside chopshop.pipeline.presets."""
     try:
-        pkg = resources.files("chopshop.pipeline.presets")
+        pkg = resources.files("chopshop.pipelines.presets")
     except Exception:
         return []
     out: List[str] = []
@@ -76,7 +76,7 @@ def list_presets() -> List[str]:
 
 def _read_text_resource(pkg_rel_path: str) -> str:
     """Read a resource file shipped in the wheel into text."""
-    pkg = resources.files("chopshop.pipeline.presets")
+    pkg = resources.files("chopshop.pipelines.presets")
     with resources.as_file(pkg / pkg_rel_path) as real_path:
         return Path(real_path).read_text(encoding="utf-8")
 
@@ -332,11 +332,11 @@ def run_steps_for_input(cs: ChopShop, steps: List[dict], input_path: Path, vars_
 def _build_arg_parser():
     import argparse
     p = argparse.ArgumentParser(description="ChopShop pipeline runner (free-form, preset-driven)")
-    p.add_argument("--root", required=True, help="Folder to scan for inputs")
-    p.add_argument("--kind", default="audio", choices=["audio", "video", "any"], help="What to discover under --root")
+    p.add_argument("--root_dir", required=True, help="Folder to scan for inputs")
+    p.add_argument("--file_type", default="audio", choices=["audio", "video", "any"], help="What to discover under --root")
 
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--preset", help="Built-in preset name (found in chopshop.pipeline.presets)")
+    g.add_argument("--preset", help="Built-in preset name (found in chopshop.pipelines.presets)")
     g.add_argument("--preset-file", help="Path to a YAML preset on disk")
 
     # Variables that can be referenced from steps via {{var:name}}
@@ -382,8 +382,8 @@ def main():
     vars_merged.update(parse_cli_vars(args.var))
 
     # Discover inputs (absolute paths)
-    inputs = find_files(args.root, kind=args.kind, recursive=True, absolute=True)
-    print(f"[pipeline] Found {len(inputs)} '{args.kind}' input(s) under {args.root}")
+    inputs = find_files(args.root_dir, file_type=args.file_type, recursive=True, absolute=True)
+    print(f"[pipeline] Found {len(inputs)} '{args.file_type}' input(s) under {args.root_dir}")
 
     cs = ChopShop()
     results: List[dict] = []
@@ -406,7 +406,7 @@ def main():
                 "input": r.get("input", ""),
                 "ok": r.get("ok", False),
                 "error": r.get("error", ""),
-                "artifacts": json.dumps(r.get("artifacts", {}), ensure_ascii=False),
+                "artifacts": json.dumps(r.get("artifacts", {}), ensure_ascii=False, default=str),
             })
 
     ok = sum(1 for r in results if r.get("ok"))

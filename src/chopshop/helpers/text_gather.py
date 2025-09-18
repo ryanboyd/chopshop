@@ -232,7 +232,7 @@ def csv_to_analysis_ready_csv(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not overwrite_existing and Path(out_path).is_file():
-        print("File already exists, returning existing file.")
+        print("File with gathered text already exists; returning existing file.")
         return out_path
 
     # If no grouping, we can stream straight to the output
@@ -381,7 +381,7 @@ def txt_folder_to_analysis_ready_csv(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not overwrite_existing and Path(out_path).is_file():
-        print("File already exists, returning existing file.")
+        print("File with gathered text already exists; returning existing file.")
         return out_path
 
     writer, fh, _ = _open_out_csv(out_path, include_source_col=False, include_source_path=include_source_path)
@@ -436,7 +436,7 @@ if __name__ == "__main__":
     # Common parsing options
     parser.add_argument("--encoding", default="utf-8-sig", help="Input text/CSV encoding. Default: utf-8-sig")
 
-    parser.add_argument("--overwrite-existing", type=bool, default=False,
+    parser.add_argument("--overwrite_existing", type=bool, default=False,
                         help="Do you want to overwrite the output file if it already exists?")
 
     # CSV mode options
@@ -487,6 +487,7 @@ if __name__ == "__main__":
             out_path = csv_to_analysis_ready_csv(
                 csv_path=args.csv,
                 out_csv=args.out,
+                overwrite_existing=args.overwrite_existing,
                 text_cols=text_cols,
                 id_cols=id_cols,
                 mode=args.mode,
@@ -505,6 +506,7 @@ if __name__ == "__main__":
             out_path = txt_folder_to_analysis_ready_csv(
                 root_dir=args.txt_dir,
                 out_csv=args.out,
+                overwrite_existing=args.overwrite_existing,
                 recursive=args.recursive,
                 pattern=args.pattern,
                 encoding=args.encoding,

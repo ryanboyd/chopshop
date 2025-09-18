@@ -92,6 +92,7 @@ def analyze_with_sentence_embeddings(
 
     # ----- Output -----
     out_features_csv: Optional[Union[str, Path]] = None,
+    overwrite_existing: bool = False,  # if the file already exists, let's not overwrite by default
 
     # ====== SHARED I/O OPTIONS ======
     encoding: str = "utf-8-sig",
@@ -173,6 +174,10 @@ def analyze_with_sentence_embeddings(
     out_features_csv = Path(out_features_csv)
     out_features_csv.parent.mkdir(parents=True, exist_ok=True)
 
+    if not overwrite_existing and Path(out_features_csv).is_file():
+        print("Sentence embedding feature output file already exists; returning existing file.")
+        return out_features_csv
+
     # 2) load model
     if SentenceTransformer is None:
         raise ImportError(
@@ -245,6 +250,8 @@ def _build_arg_parser():
 
     p.add_argument("--out", dest="out_features_csv", default=None,
                    help="Output CSV (default: ./features/sentence-embeddings/<gathered_name>)")
+    p.add_argument("--overwrite_existing", type=bool, default=False,
+                    help="Do you want to overwrite the output file if it already exists?")
 
     # I/O
     p.add_argument("--encoding", default="utf-8-sig")
@@ -295,6 +302,7 @@ def main():
         txt_dir=args.txt_dir,
         analysis_csv=args.analysis_csv,
         out_features_csv=args.out_features_csv,
+        overwrite_existing=args.overwrite_existing,
         encoding=args.encoding,
         delimiter=args.delimiter,
         text_cols=text_cols,
